@@ -13,7 +13,8 @@ import type { IngestResponse, MemoryTag, Tag } from "../types";
 interface UploadStatusEntry {
   id: string;
   filename: string;
-  status: "uploading" | "processing" | "done" | "error";
+  fileSize: number;
+  status: "pending" | "uploading" | "processing" | "done" | "error" | "cancelled";
   progress: number;
   result?: IngestResponse;
   error?: string;
@@ -38,44 +39,147 @@ const MAX_UPLOAD_SIZE_MB = 500;
 export default function Capture() {
   const [activeTab, setActiveTab] = useState<TabId>("text");
   const [uploads, setUploads] = useState<UploadStatusEntry[]>([]);
+  const [isImporting, setIsImporting] = useState(false);
 
-  const addUpload = useCallback((entry: UploadStatusEntry) => {
-    setUploads((prev) => [...prev, entry]);
+  const cancelledRef = useRef(false);
+  const fileMapRef = useRef<Map<string, File>>(new Map());
+  const isImportingRef = useRef(false);
+  // Queue of entry IDs awaiting upload — written to synchronously by
+  // handleFilesSelected and consumed by processQueue, avoiding all React
+  // state-timing issues (stale refs, batched updates, concurrent mode).
+  const pendingQueueRef = useRef<string[]>([]);
+
+  const processQueue = useCallback(async () => {
+    // Guard: if already running, the active instance will pick up new entries
+    // from pendingQueueRef on its next loop iteration.
+    if (isImportingRef.current) return;
+    isImportingRef.current = true;
+    setIsImporting(true);
+    cancelledRef.current = false;
+
+    // Process entries sequentially by pulling IDs from pendingQueueRef.
+    while (true) {
+      // Check cancellation — only cancel entries that were queued before
+      // the cancel was requested.  After handling cancellation, reset the
+      // flag so that entries added *after* cancel are processed normally.
+      if (cancelledRef.current) {
+        const remaining = new Set(pendingQueueRef.current);
+        pendingQueueRef.current = [];
+        if (remaining.size > 0) {
+          setUploads((prev) =>
+            prev.map((u) => (remaining.has(u.id) && u.status === "pending" ? { ...u, status: "cancelled" as const } : u))
+          );
+        }
+        cancelledRef.current = false;
+        // Don't break — fall through to the shift() below which will
+        // exit naturally if the queue is now empty, or continue
+        // processing if new files were added after the cancel.
+      }
+
+      const entryId = pendingQueueRef.current.shift();
+      if (!entryId) break;
+
+      // Mark as uploading
+      setUploads((prev) =>
+        prev.map((u) => (u.id === entryId ? { ...u, status: "uploading" } : u))
+      );
+
+      const file = fileMapRef.current.get(entryId);
+      if (!file) {
+        setUploads((prev) =>
+          prev.map((u) => (u.id === entryId ? { ...u, status: "error", error: "File reference lost" } : u))
+        );
+        continue;
+      }
+
+      try {
+        const result = await uploadFileWithProgress(file, undefined, (progress) => {
+          setUploads((prev) =>
+            prev.map((u) => (u.id === entryId ? { ...u, progress } : u))
+          );
+        });
+        setUploads((prev) =>
+          prev.map((u) => (u.id === entryId ? { ...u, status: "done", progress: 100, result } : u))
+        );
+      } catch (err) {
+        setUploads((prev) =>
+          prev.map((u) =>
+            u.id === entryId
+              ? { ...u, status: "error", error: err instanceof Error ? err.message : "Upload failed" }
+              : u
+          )
+        );
+      }
+
+      // Clean up file reference for completed entry
+      fileMapRef.current.delete(entryId);
+    }
+
+    isImportingRef.current = false;
+    setIsImporting(false);
   }, []);
 
-  const updateUpload = useCallback((id: string, patch: Partial<UploadStatusEntry>) => {
-    setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
-  }, []);
-
-  async function handleFileUpload(file: File) {
+  function handleFilesSelected(files: File[]) {
     const maxBytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024;
-    if (file.size > maxBytes) {
-      const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+    const newEntries: UploadStatusEntry[] = [];
+
+    for (const file of files) {
       const entryId = crypto.randomUUID();
-      addUpload({
-        id: entryId,
-        filename: file.name,
-        status: "error",
-        progress: 0,
-        error: `File too large (${sizeMB}MB). Maximum size is ${MAX_UPLOAD_SIZE_MB}MB.`,
-      });
-      return;
+
+      if (file.size > maxBytes) {
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+        newEntries.push({
+          id: entryId,
+          filename: file.name,
+          fileSize: file.size,
+          status: "error",
+          progress: 0,
+          error: `File too large (${sizeMB}MB). Maximum size is ${MAX_UPLOAD_SIZE_MB}MB.`,
+        });
+      } else {
+        newEntries.push({
+          id: entryId,
+          filename: file.name,
+          fileSize: file.size,
+          status: "pending",
+          progress: 0,
+        });
+        fileMapRef.current.set(entryId, file);
+        pendingQueueRef.current.push(entryId);
+      }
     }
 
-    const entryId = crypto.randomUUID();
-    addUpload({ id: entryId, filename: file.name, status: "uploading", progress: 0 });
+    setUploads((prev) => [...prev, ...newEntries]);
 
-    try {
-      const result = await uploadFileWithProgress(file, undefined, (progress) => {
-        updateUpload(entryId, { progress });
-      });
-      updateUpload(entryId, { status: "done", progress: 100, result });
-    } catch (err) {
-      updateUpload(entryId, {
-        status: "error",
-        error: err instanceof Error ? err.message : "Upload failed",
-      });
-    }
+    // Start processing — if processQueue is already running it will pick up the
+    // new entries from pendingQueueRef on its next iteration. If not, start it.
+    void processQueue();
+  }
+
+  function handleSingleFileUpload(file: File) {
+    handleFilesSelected([file]);
+  }
+
+  function handleCancel() {
+    cancelledRef.current = true;
+    pendingQueueRef.current = [];
+    setUploads((prev) =>
+      prev.map((u) => (u.status === "pending" ? { ...u, status: "cancelled" } : u))
+    );
+  }
+
+  function handleClearCompleted() {
+    setUploads((prev) => {
+      const remaining = prev.filter((u) => u.status !== "done" && u.status !== "cancelled" && u.status !== "error");
+      // Clean up file references for removed entries
+      const remainingIds = new Set(remaining.map((u) => u.id));
+      for (const [id] of fileMapRef.current) {
+        if (!remainingIds.has(id)) {
+          fileMapRef.current.delete(id);
+        }
+      }
+      return remaining;
+    });
   }
 
   return (
@@ -101,12 +205,22 @@ export default function Capture() {
 
       {/* Active tab content */}
       {activeTab === "text" && <TextCapture />}
-      {activeTab === "file" && <FileDropZone onFileUpload={handleFileUpload} />}
-      {activeTab === "voice" && <VoiceRecorder onFileUpload={handleFileUpload} />}
-      {activeTab === "photo" && <PhotoCapture onFileUpload={handleFileUpload} />}
+      {activeTab === "file" && <FileDropZone onFilesSelected={handleFilesSelected} />}
+      {activeTab === "voice" && <VoiceRecorder onFileUpload={handleSingleFileUpload} />}
+      {activeTab === "photo" && <PhotoCapture onFileUpload={handleSingleFileUpload} />}
       {activeTab === "url" && <UrlImport />}
 
-      {/* Upload status area */}
+      {/* Total progress (when bulk importing) */}
+      {uploads.length > 0 && (
+        <TotalProgressBar
+          uploads={uploads}
+          isImporting={isImporting}
+          onCancel={handleCancel}
+          onClear={handleClearCompleted}
+        />
+      )}
+
+      {/* Individual upload status list */}
       {uploads.length > 0 && <UploadStatusList uploads={uploads} />}
     </div>
   );
@@ -249,7 +363,7 @@ function TextCapture() {
 // FileDropZone — drag-and-drop + file picker
 // ---------------------------------------------------------------------------
 
-function FileDropZone({ onFileUpload }: { onFileUpload: (file: File) => void }) {
+function FileDropZone({ onFilesSelected }: { onFilesSelected: (files: File[]) => void }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -267,13 +381,13 @@ function FileDropZone({ onFileUpload }: { onFileUpload: (file: File) => void }) 
     e.preventDefault();
     setDragging(false);
     const files = Array.from(e.dataTransfer.files);
-    files.forEach(onFileUpload);
+    onFilesSelected(files);
   }
 
   function handleFileSelect() {
     const files = inputRef.current?.files;
     if (files) {
-      Array.from(files).forEach(onFileUpload);
+      onFilesSelected(Array.from(files));
       // Reset so the same file can be re-selected
       if (inputRef.current) inputRef.current.value = "";
     }
@@ -745,16 +859,117 @@ function UrlImport() {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+// ---------------------------------------------------------------------------
+// TotalProgressBar — overall import progress
+// ---------------------------------------------------------------------------
+
+function TotalProgressBar({
+  uploads,
+  isImporting,
+  onCancel,
+  onClear,
+}: {
+  uploads: UploadStatusEntry[];
+  isImporting: boolean;
+  onCancel: () => void;
+  onClear: () => void;
+}) {
+  const total = uploads.length;
+  const done = uploads.filter((u) => u.status === "done").length;
+  const failed = uploads.filter((u) => u.status === "error").length;
+  const cancelled = uploads.filter((u) => u.status === "cancelled").length;
+  const completed = done + failed + cancelled;
+
+  // Smooth progress: factor in the currently uploading file's progress
+  const currentlyUploading = uploads.find((u) => u.status === "uploading");
+  const smoothPercent =
+    total > 0
+      ? Math.round(
+          ((completed + (currentlyUploading ? currentlyUploading.progress / 100 : 0)) / total) * 100
+        )
+      : 0;
+
+  const allProcessed = !isImporting && completed === total;
+
+  return (
+    <div className="mt-6 bg-gray-800 rounded-md p-4 space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-gray-300">
+          {isImporting
+            ? `Importing files: ${completed} of ${total} complete`
+            : allProcessed
+              ? `Import complete: ${done} of ${total} succeeded`
+              : `${completed} of ${total} files processed`}
+        </span>
+        <div className="flex gap-2">
+          {isImporting && (
+            <button
+              onClick={onCancel}
+              className="px-3 py-1 text-xs font-medium text-red-400 bg-red-900/30 hover:bg-red-900/50 rounded transition-colors"
+            >
+              Cancel Remaining
+            </button>
+          )}
+          {!isImporting && uploads.length > 0 && (
+            <button
+              onClick={onClear}
+              className="px-3 py-1 text-xs font-medium text-gray-400 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-blue-600 rounded-full transition-all"
+          style={{ width: `${smoothPercent}%` }}
+        />
+      </div>
+
+      {/* Summary stats (shown when all processed) */}
+      {allProcessed && (
+        <div className="flex gap-3 text-xs">
+          {done > 0 && <span className="text-green-400">{done} succeeded</span>}
+          {failed > 0 && <span className="text-red-400">{failed} failed</span>}
+          {cancelled > 0 && <span className="text-gray-500">{cancelled} cancelled</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // UploadStatusList — progress & results display
 // ---------------------------------------------------------------------------
 
 function UploadStatusList({ uploads }: { uploads: UploadStatusEntry[] }) {
   return (
-    <div className="mt-8 space-y-2">
+    <div className="mt-4 space-y-2">
       <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Uploads</h3>
       {uploads.map((entry) => (
         <div key={entry.id} className="flex items-center gap-3 bg-gray-800 rounded-md px-4 py-2 text-sm">
-          <span className="text-gray-300 truncate flex-1">{entry.filename}</span>
+          <span className="text-gray-300 truncate flex-1">
+            {entry.filename}{" "}
+            <span className="text-gray-500 text-xs">({formatFileSize(entry.fileSize)})</span>
+          </span>
+
+          {entry.status === "pending" && (
+            <span className="text-gray-500">Queued</span>
+          )}
 
           {entry.status === "uploading" && (
             <div className="flex items-center gap-2 min-w-[160px]">
@@ -779,7 +994,11 @@ function UploadStatusList({ uploads }: { uploads: UploadStatusEntry[] }) {
           )}
 
           {entry.status === "error" && (
-            <span className="text-red-400">{entry.error}</span>
+            <span className="text-red-400 truncate max-w-[200px]">{entry.error}</span>
+          )}
+
+          {entry.status === "cancelled" && (
+            <span className="text-gray-500">Cancelled</span>
           )}
         </div>
       ))}
