@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -19,6 +21,10 @@ async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.tmp_dir.mkdir(parents=True, exist_ok=True)
     create_db_and_tables()
+
+    # Configure session timeout for KEK wipe after inactivity
+    from app import auth_state
+    auth_state.configure_timeout(settings.session_timeout_minutes)
 
     # Initialize git repo for version history
     from app.services.git_ops import GitOpsService
@@ -65,8 +71,6 @@ async def lifespan(app: FastAPI):
         app.state.worker = worker
 
     except Exception:
-        import logging
-
         logging.getLogger(__name__).warning(
             "Failed to initialize Qdrant/Embedding service — AI features unavailable until Qdrant is reachable",
             exc_info=True,
@@ -82,7 +86,29 @@ async def lifespan(app: FastAPI):
     from app.services.backup import BackupService
     app.state.backup_service = BackupService(settings)
 
+    # Start periodic sweep of expired sessions (every 60s)
+    async def _session_sweep_loop() -> None:
+        while True:
+            await asyncio.sleep(60)
+            try:
+                wiped = auth_state.sweep_expired()
+                if wiped:
+                    logging.getLogger(__name__).info(
+                        "Session sweep: wiped %d expired session(s)", wiped
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception("Session sweep error")
+
+    sweep_task = asyncio.create_task(_session_sweep_loop())
+
     yield
+
+    # Shutdown: cancel session sweep
+    sweep_task.cancel()
+    try:
+        await sweep_task
+    except asyncio.CancelledError:
+        pass
     # Shutdown: stop background worker
     if hasattr(app.state, "worker"):
         app.state.worker.stop()
@@ -92,8 +118,6 @@ async def lifespan(app: FastAPI):
         app.state.qdrant_client.close()
 
     # Shutdown: wipe all in-memory master keys
-    from app import auth_state
-
     auth_state.wipe_all()
 
 

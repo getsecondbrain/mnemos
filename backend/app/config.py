@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 7
+    session_timeout_minutes: int = 15
     data_dir: Path = Path("/app/data")
     tmp_dir: Path = Path("/app/tmp")
     db_url: str = "sqlite:////app/data/brain.db"
