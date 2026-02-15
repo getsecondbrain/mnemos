@@ -183,11 +183,11 @@ export default function Capture() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="w-full md:max-w-2xl md:mx-auto">
       <h2 className="text-2xl font-bold text-gray-100 mb-6">Capture</h2>
 
       {/* Tab bar */}
-      <div className="flex gap-1 mb-6 border-b border-gray-700">
+      <div className="flex gap-1 mb-6 border-b border-gray-700 overflow-x-auto">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -400,7 +400,7 @@ function FileDropZone({ onFilesSelected }: { onFilesSelected: (files: File[]) =>
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`border-2 border-dashed rounded-md p-12 text-center cursor-pointer transition-colors ${
+        className={`border-2 border-dashed rounded-md p-6 md:p-12 text-center cursor-pointer transition-colors ${
           dragging
             ? "border-blue-400 bg-blue-900/20"
             : "border-gray-600 hover:border-gray-500 bg-gray-800/50"
@@ -823,7 +823,7 @@ function UrlImport() {
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-3">
+      <div className="flex flex-col sm:flex-row gap-3">
         <input
           type="url"
           value={url}
@@ -834,7 +834,7 @@ function UrlImport() {
         <button
           onClick={handleImport}
           disabled={!isValidUrl || status === "loading"}
-          className={`px-6 py-2 font-medium rounded-md ${
+          className={`w-full sm:w-auto px-6 py-2 font-medium rounded-md ${
             isValidUrl && status !== "loading"
               ? "bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
               : "bg-blue-600 text-white opacity-50 cursor-not-allowed"

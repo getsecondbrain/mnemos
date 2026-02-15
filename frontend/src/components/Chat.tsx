@@ -195,7 +195,7 @@ export default function Chat() {
   return (
     <div className="h-full flex flex-col">
       {/* Connection status */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+      <div className="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-gray-800">
         <h2 className="text-lg font-semibold text-gray-100">Chat</h2>
         <div className="flex items-center gap-2">
           {isReconnecting ? (
@@ -252,7 +252,7 @@ export default function Chat() {
           <div
             key={msg.id}
             className={`${
-              msg.role === "user" ? "ml-12" : "mr-12"
+              msg.role === "user" ? "ml-8 sm:ml-12" : "mr-8 sm:mr-12"
             }`}
           >
             <div
@@ -296,7 +296,7 @@ export default function Chat() {
       </div>
 
       {/* Input area */}
-      <div className="border-t border-gray-800 p-4 bg-gray-950">
+      <div className="border-t border-gray-800 p-3 sm:p-4 bg-gray-950 sticky bottom-0">
         <div className="flex gap-3">
           <textarea
             ref={textareaRef}
@@ -305,7 +305,7 @@ export default function Chat() {
             onKeyDown={handleKeyDown}
             placeholder="Type your question..."
             rows={1}
-            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-gray-100 resize-none focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 sm:px-4 sm:py-3 text-gray-100 resize-none focus:ring-2 focus:ring-blue-500 focus:outline-none"
           />
           <button
             onClick={handleSend}

@@ -84,59 +84,61 @@ function TimelineBar({
           </button>
         </div>
       )}
-      <div className="flex items-end gap-px" style={{ height: 64 }}>
-        {Array.from({ length: totalYears }, (_, i) => {
-          const year = startYear + i;
-          const count = countByYear.get(year) ?? 0;
-          const heightPct = count > 0 ? Math.max((count / maxCount) * 100, 8) : 0;
-          const isSelected = selectedYear === year;
-          const isCurrent = year === currentYear;
+      <div className="overflow-x-auto">
+        <div className="flex items-end gap-px" style={{ height: 64, minWidth: totalYears > 15 ? totalYears * 24 : undefined }}>
+          {Array.from({ length: totalYears }, (_, i) => {
+            const year = startYear + i;
+            const count = countByYear.get(year) ?? 0;
+            const heightPct = count > 0 ? Math.max((count / maxCount) * 100, 8) : 0;
+            const isSelected = selectedYear === year;
+            const isCurrent = year === currentYear;
 
-          let barColor = "bg-gray-600";
-          if (isSelected) barColor = "bg-blue-500";
-          else if (isCurrent) barColor = "bg-yellow-500";
-          else if (count > 0) barColor = "bg-gray-400";
+            let barColor = "bg-gray-600";
+            if (isSelected) barColor = "bg-blue-500";
+            else if (isCurrent) barColor = "bg-yellow-500";
+            else if (count > 0) barColor = "bg-gray-400";
 
-          return (
-            <button
-              key={year}
-              onClick={() => onSelectYear(isSelected ? null : year)}
-              className="flex-1 flex flex-col items-center justify-end group relative"
-              style={{ minWidth: 0, height: "100%" }}
-              title={`${year}: ${count} memories`}
-            >
-              {count > 0 && (
-                <div
-                  className={`w-full rounded-t-sm transition-colors ${barColor} group-hover:bg-blue-400`}
-                  style={{
-                    height: `${heightPct}%`,
-                    minHeight: 3,
-                  }}
-                />
-              )}
-              {count === 0 && (
-                <div
-                  className="w-full bg-gray-800 group-hover:bg-gray-700 transition-colors"
-                  style={{ height: 1 }}
-                />
-              )}
-            </button>
-          );
-        })}
-      </div>
-      <div className="flex gap-px mt-1">
-        {Array.from({ length: totalYears }, (_, i) => {
-          const year = startYear + i;
-          return (
-            <div key={year} className="flex-1 text-center" style={{ minWidth: 0 }}>
-              {showLabel(year) && (
-                <span className="text-[9px] text-gray-500 leading-none">
-                  {totalYears > 30 ? `'${String(year).slice(2)}` : year}
-                </span>
-              )}
-            </div>
-          );
-        })}
+            return (
+              <button
+                key={year}
+                onClick={() => onSelectYear(isSelected ? null : year)}
+                className="flex-1 flex flex-col items-center justify-end group relative"
+                style={{ minWidth: 0, height: "100%" }}
+                title={`${year}: ${count} memories`}
+              >
+                {count > 0 && (
+                  <div
+                    className={`w-full rounded-t-sm transition-colors ${barColor} group-hover:bg-blue-400`}
+                    style={{
+                      height: `${heightPct}%`,
+                      minHeight: 3,
+                    }}
+                  />
+                )}
+                {count === 0 && (
+                  <div
+                    className="w-full bg-gray-800 group-hover:bg-gray-700 transition-colors"
+                    style={{ height: 1 }}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex gap-px mt-1" style={{ minWidth: totalYears > 15 ? totalYears * 24 : undefined }}>
+          {Array.from({ length: totalYears }, (_, i) => {
+            const year = startYear + i;
+            return (
+              <div key={year} className="flex-1 text-center" style={{ minWidth: 0 }}>
+                {showLabel(year) && (
+                  <span className="text-[9px] text-gray-500 leading-none">
+                    {totalYears > 30 ? `'${String(year).slice(2)}` : year}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -460,9 +462,9 @@ export default function Timeline() {
             <Link
               key={memory.id}
               to={`/memory/${memory.id}`}
-              className="block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
+              className="block bg-gray-900 border border-gray-800 rounded-lg p-3 md:p-4 hover:border-gray-700 transition-colors"
             >
-              <div className="flex gap-4">
+              <div className="flex gap-3 md:gap-4">
                 {memory.content_type === "photo" && memory.source_id && (
                   <Thumbnail sourceId={memory.source_id} />
                 )}
