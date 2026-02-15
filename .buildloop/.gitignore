@@ -1,0 +1,4 @@
+# Build loop ephemeral state — not committed
+logs/
+current-plan.md
+validation-report.md

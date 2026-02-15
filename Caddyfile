@@ -1,0 +1,39 @@
+{$SITE_ADDRESS::80} {
+    handle /api/auth/* {
+        rate_limit {
+            zone api_auth {
+                key {client_ip}
+                events 10
+                window 1m
+            }
+        }
+        reverse_proxy backend:8000
+    }
+
+    handle /api/* {
+        rate_limit {
+            zone api_general {
+                key {client_ip}
+                events 100
+                window 1m
+            }
+        }
+        reverse_proxy backend:8000
+    }
+
+    handle /ws/* {
+        reverse_proxy backend:8000
+    }
+
+    handle {
+        reverse_proxy frontend:3000
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'"
+    }
+}

@@ -1,0 +1,89 @@
+# docker-compose.prod.yml — Production overrides for Mnemos
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Adds: resource limits, read-only root filesystems, security options,
+# and tighter restart policies for production deployments.
+
+services:
+  caddy:
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
+
+  backend:
+    restart: always
+    read_only: true
+    tmpfs:
+      - /app/tmp:size=256m,noexec,nosuid,nodev
+      - /tmp:size=64m,noexec,nosuid,nodev
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+
+  qdrant:
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+    security_opt:
+      - no-new-privileges:true
+
+  ollama:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 6G
+        reservations:
+          cpus: "0.50"
+          memory: 2G
+    security_opt:
+      - no-new-privileges:true
+    # NOTE: Ollama cannot use read_only: true because it writes model
+    # cache files to /root/.ollama at runtime (beyond the volume mount).
+    # The volume mount covers the primary data directory.

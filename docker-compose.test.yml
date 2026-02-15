@@ -1,0 +1,39 @@
+# docker-compose.test.yml — Isolated test environment for Mnemos
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+#   docker compose -f docker-compose.test.yml down -v
+#
+# Runs the backend test suite in an isolated environment with its own
+# ephemeral database, vault, and no external service dependencies.
+
+services:
+  test-runner:
+    build: ./backend
+    command: python -m pytest tests/ -v --tb=short
+    environment:
+      - DATA_DIR=/tmp/mnemos-test-data
+      - TMP_DIR=/tmp/mnemos-test-tmp
+      - DB_URL=sqlite://
+      - AUTH_SALT=test-salt-for-ci
+      - QDRANT_URL=http://qdrant-test:6333
+      - OLLAMA_URL=http://ollama-mock:11434
+    tmpfs:
+      - /tmp/mnemos-test-data
+      - /tmp/mnemos-test-tmp
+    depends_on:
+      qdrant-test:
+        condition: service_healthy
+
+  qdrant-test:
+    image: qdrant/qdrant:v1.12.4
+    expose:
+      - "6333"
+    tmpfs:
+      - /qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
