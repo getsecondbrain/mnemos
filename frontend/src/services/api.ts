@@ -457,6 +457,32 @@ export async function fetchVaultFile(sourceId: string): Promise<Blob> {
   return res.blob();
 }
 
+export interface SourceMeta {
+  source_id: string;
+  mime_type: string;
+  preservation_format: string;
+  content_type: string;
+  has_preserved_copy: boolean;
+  original_size: number;
+}
+
+export async function fetchSourceMeta(sourceId: string): Promise<SourceMeta> {
+  return request<SourceMeta>(`/vault/${sourceId}/meta`);
+}
+
+export async function fetchPreservedVaultFile(sourceId: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getAccessTokenFn?.();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${BASE_URL}/vault/${sourceId}/preserved`, { headers });
+  if (!res.ok) {
+    throw new ApiError(res.status, "Failed to fetch preserved vault file");
+  }
+  return res.blob();
+}
+
 // --- Admin endpoints --------------------------------------------------------
 
 export interface ReprocessDetail {

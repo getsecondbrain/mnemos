@@ -1,10 +1,11 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag, fetchVaultFile } from "../services/api";
+import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag, fetchVaultFile, fetchPreservedVaultFile, fetchSourceMeta } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
+import type { SourceMeta } from "../services/api";
 
 function hasTimezone(iso: string): boolean {
   return iso.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(iso);
@@ -27,6 +28,19 @@ function toDatetimeLocalValue(iso: string): string {
   const d = new Date(utcIso);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function _mimeToExt(mime: string): string {
+  const map: Record<string, string> = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/rtf": ".rtf",
+    "text/rtf": ".rtf",
+  };
+  return map[mime] ?? ".bin";
 }
 
 export default function MemoryDetail() {
@@ -58,6 +72,10 @@ export default function MemoryDetail() {
 
   const [memoryTags, setMemoryTags] = useState<MemoryTagType[]>([]);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
+  const [documentLoading, setDocumentLoading] = useState(false);
+  const [documentError, setDocumentError] = useState(false);
+  const [sourceMeta, setSourceMeta] = useState<SourceMeta | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -67,21 +85,59 @@ export default function MemoryDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // Fetch vault file for photo/video/document memories
+  // Fetch vault file for photo/document memories
   useEffect(() => {
     if (!memory?.source_id) return;
-    if (memory.content_type !== "photo") return;
 
     let revoked = false;
-    fetchVaultFile(memory.source_id)
-      .then((blob) => {
-        if (revoked) return;
-        const url = URL.createObjectURL(blob);
-        setImageUrl(url);
-      })
-      .catch(() => {
-        // Silently ignore — image is supplementary
-      });
+
+    if (memory.content_type === "photo") {
+      fetchVaultFile(memory.source_id)
+        .then((blob) => {
+          if (revoked) return;
+          const url = URL.createObjectURL(blob);
+          setImageUrl(url);
+        })
+        .catch(() => {
+          // Silently ignore — image is supplementary
+        });
+    }
+
+    if (memory.content_type === "document") {
+      setDocumentLoading(true);
+      setDocumentError(false);
+      // First fetch source metadata to determine viewing strategy
+      fetchSourceMeta(memory.source_id)
+        .then((meta) => {
+          if (revoked) return;
+          setSourceMeta(meta);
+
+          // Determine which file to fetch for inline viewing
+          const isPdf = meta.mime_type === "application/pdf";
+          const hasPreservedPdf = meta.has_preserved_copy &&
+            (meta.preservation_format === "pdf-a+md" || meta.preservation_format === "pdf+text");
+
+          if (isPdf) {
+            // Original is a PDF — fetch it directly
+            return fetchVaultFile(memory.source_id!);
+          } else if (hasPreservedPdf) {
+            // Original is DOCX/DOC/RTF etc — fetch the preserved PDF copy
+            return fetchPreservedVaultFile(memory.source_id!);
+          }
+          return null;
+        })
+        .then((blob) => {
+          if (revoked || !blob) return;
+          const url = URL.createObjectURL(blob);
+          setDocumentUrl(url);
+        })
+        .catch(() => {
+          if (!revoked) setDocumentError(true);
+        })
+        .finally(() => {
+          if (!revoked) setDocumentLoading(false);
+        });
+    }
 
     return () => {
       revoked = true;
@@ -89,6 +145,13 @@ export default function MemoryDetail() {
         if (prev) URL.revokeObjectURL(prev);
         return null;
       });
+      setDocumentUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      setSourceMeta(null);
+      setDocumentLoading(false);
+      setDocumentError(false);
     };
   }, [memory?.source_id, memory?.content_type]);
 
@@ -466,6 +529,132 @@ export default function MemoryDetail() {
               alt={displayTitle}
               className="max-w-full rounded-lg border border-gray-700"
             />
+          </div>
+        )}
+
+        {/* Document viewer */}
+        {memory.content_type === "document" && (
+          <div className="mt-6">
+            {documentUrl ? (
+              <>
+                <iframe
+                  src={`${documentUrl}#toolbar=1`}
+                  title="Document viewer"
+                  className="w-full h-[600px] rounded-lg border border-gray-700"
+                />
+                {/* Fallback link in case browser cannot render PDF inline */}
+                <p className="mt-1 text-xs text-gray-500">
+                  PDF not displaying?{" "}
+                  <a
+                    href={documentUrl}
+                    download="document.pdf"
+                    className="text-blue-400 hover:text-blue-300 underline"
+                  >
+                    Download it instead
+                  </a>
+                </p>
+                {/* Download Original button */}
+                <div className="mt-3 flex gap-3">
+                  <button
+                    onClick={async () => {
+                      if (!memory.source_id) return;
+                      try {
+                        // If the original is a PDF, reuse the already-loaded blob URL
+                        const isPdfOriginal = sourceMeta?.mime_type === "application/pdf";
+                        if (isPdfOriginal && documentUrl) {
+                          const a = document.createElement("a");
+                          a.href = documentUrl;
+                          a.download = `${memory.source_id}.pdf`;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          return;
+                        }
+                        // Non-PDF original (DOCX/DOC/RTF) — fetch original file
+                        const blob = await fetchVaultFile(memory.source_id);
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = sourceMeta
+                          ? `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`
+                          : `${memory.source_id}`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                      } catch {
+                        alert("Failed to download the original file. Please try again.");
+                      }
+                    }}
+                    className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-md transition-colors border border-gray-700"
+                  >
+                    Download Original
+                  </button>
+                </div>
+              </>
+            ) : documentLoading ? (
+              <div className="flex items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
+                <p className="text-gray-400">Loading document viewer...</p>
+              </div>
+            ) : documentError ? (
+              <div className="flex flex-col items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
+                <p className="text-gray-400 mb-3">
+                  Failed to load document preview.
+                </p>
+                {memory.source_id && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        const blob = await fetchVaultFile(memory.source_id!);
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = sourceMeta
+                          ? `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`
+                          : `${memory.source_id}`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                      } catch {
+                        alert("Failed to download the original file. Please try again.");
+                      }
+                    }}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
+                  >
+                    Download Original
+                  </button>
+                )}
+              </div>
+            ) : sourceMeta ? (
+              // Source metadata loaded but no viewable PDF available
+              <div className="flex flex-col items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
+                <p className="text-gray-400 mb-3">
+                  No inline preview available for this document type.
+                </p>
+                <button
+                  onClick={async () => {
+                    if (!memory.source_id) return;
+                    try {
+                      const blob = await fetchVaultFile(memory.source_id);
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    } catch {
+                      alert("Failed to download the original file. Please try again.");
+                    }
+                  }}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
+                >
+                  Download Original
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
 
