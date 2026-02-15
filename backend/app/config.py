@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     worker_max_retries: int = 3
     worker_retry_base_delay_seconds: int = 30
     worker_retry_max_delay_seconds: int = 600  # 10 minutes cap
+    # Vault integrity check settings
+    vault_integrity_sample_pct: float = 0.1  # Fraction of files to hash-verify (0.0-1.0)
     # OCR settings
     ocr_enabled: bool = True  # Set to False if tesseract is not installed
     # Backup settings

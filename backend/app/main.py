@@ -101,12 +101,40 @@ async def lifespan(app: FastAPI):
 
     sweep_task = asyncio.create_task(_session_sweep_loop())
 
+    # Start daily vault integrity check
+    async def _vault_integrity_loop() -> None:
+        # Delay first check by 60s to let services initialize
+        await asyncio.sleep(60)
+        while True:
+            try:
+                if hasattr(app.state, "worker"):
+                    from app.worker import Job, JobType
+                    app.state.worker.submit_job(
+                        Job(job_type=JobType.VAULT_INTEGRITY, payload={})
+                    )
+                    logging.getLogger(__name__).info(
+                        "Submitted daily vault integrity check"
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Error submitting vault integrity job"
+                )
+            await asyncio.sleep(86400)  # 24 hours
+
+    vault_check_task = asyncio.create_task(_vault_integrity_loop())
+
     yield
 
     # Shutdown: cancel session sweep
     sweep_task.cancel()
     try:
         await sweep_task
+    except asyncio.CancelledError:
+        pass
+    # Shutdown: cancel vault integrity loop
+    vault_check_task.cancel()
+    try:
+        await vault_check_task
     except asyncio.CancelledError:
         pass
     # Shutdown: stop background worker

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
@@ -7,6 +8,8 @@ from fastapi.responses import JSONResponse
 from sqlmodel import Session, text
 
 from app.db import get_session
+from app.dependencies import get_vault_service, require_auth
+from app.services.vault import VaultService
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -69,8 +72,32 @@ async def health(request: Request, session: Session = Depends(get_session)):
         except Exception:
             backup_status = {"status": "error"}
 
+    # Vault integrity (last check result — does NOT re-run the expensive check)
+    vault_status: dict = {"status": "never_checked"}
+    last_vault = getattr(request.app.state, "last_vault_health", None)
+    if last_vault is None and hasattr(request.app.state, "worker"):
+        last_vault = getattr(request.app.state.worker, "_last_vault_health", None)
+    if last_vault is not None:
+        vault_status = {
+            "status": "healthy" if last_vault.get("healthy") else "unhealthy",
+            "last_checked": last_vault.get("checked_at"),
+            "missing_count": last_vault.get("missing_count", 0),
+            "orphan_count": last_vault.get("orphan_count", 0),
+            "hash_mismatch_count": last_vault.get("hash_mismatch_count", 0),
+            "decrypt_error_count": last_vault.get("decrypt_error_count", 0),
+        }
+
+    # Aggregate overall status from sub-checks
+    is_healthy = True
+    if db_status != "ok":
+        is_healthy = False
+    if isinstance(backup_status, dict) and backup_status.get("status") in ("stale", "error"):
+        is_healthy = False
+    if isinstance(vault_status, dict) and vault_status.get("status") == "unhealthy":
+        is_healthy = False
+
     return {
-        "status": "healthy",
+        "status": "healthy" if is_healthy else "unhealthy",
         "service": "mnemos-backend",
         "version": "0.1.0",
         "checks": {
@@ -78,6 +105,7 @@ async def health(request: Request, session: Session = Depends(get_session)):
             "jobs": jobs_status,
             "llm": llm_status,
             "backup": backup_status,
+            "vault": vault_status,
         },
     }
 
@@ -100,3 +128,34 @@ async def readiness(session: Session = Depends(get_session)):
         "status": "ready",
         "service": "mnemos-backend",
     }
+
+
+@router.get("/health/vault")
+async def vault_health(
+    request: Request,
+    session: Session = Depends(get_session),
+    vault_service: VaultService = Depends(get_vault_service),
+    _auth: str = Depends(require_auth),
+    sample_pct: float = 0.1,
+):
+    """Run vault-wide integrity verification.
+
+    Requires auth (admin operation). sample_pct controls hash check intensity.
+    Server-side cap of 0.5 prevents DoS via full-vault decryption.
+    """
+    MAX_SAMPLE_PCT = 0.5
+    sample_pct = max(0.0, min(MAX_SAMPLE_PCT, sample_pct))
+
+    try:
+        result = vault_service.verify_all(session, sample_pct=sample_pct)
+    except Exception:
+        logging.getLogger(__name__).exception("Vault integrity check failed")
+        result = {
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "healthy": False,
+            "error": "Vault integrity check failed",
+        }
+
+    # Cache for main health endpoint to reference without re-running
+    request.app.state.last_vault_health = result
+    return result

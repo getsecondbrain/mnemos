@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 class JobType(str, Enum):
     INGEST = "ingest"  # Post-ingest: embed + tokens + connections
     HEARTBEAT_CHECK = "heartbeat_check"  # Periodic heartbeat deadline check
+    VAULT_INTEGRITY = "vault_integrity"  # Daily vault integrity verification
 
 
 @dataclass
@@ -64,6 +65,7 @@ class BackgroundWorker:
         "_embedding_service",
         "_llm_service",
         "_settings",
+        "_last_vault_health",
     )
 
     def __init__(
@@ -82,6 +84,7 @@ class BackgroundWorker:
             from app.config import get_settings
             settings = get_settings()
         self._settings = settings
+        self._last_vault_health = None
 
     def start(self) -> None:
         """Start the daemon worker thread."""
@@ -232,6 +235,8 @@ class BackgroundWorker:
             self._process_ingest(job.payload)
         elif job.job_type == JobType.HEARTBEAT_CHECK:
             self._process_heartbeat_check(job.payload)
+        elif job.job_type == JobType.VAULT_INTEGRITY:
+            self._process_vault_integrity(job.payload)
         else:
             logger.warning("Unknown job type: %s", job.job_type)
 
@@ -710,6 +715,95 @@ class BackgroundWorker:
                 )
         finally:
             loop.close()
+
+    def _build_vault_service(self):
+        """Construct a VaultService from settings (same as dependencies.get_vault_service)."""
+        from app.services.vault import VaultService
+
+        vault_root = self._settings.data_dir / "vault"
+        identity_path = self._settings.data_dir / "vault.key"
+
+        if identity_path.exists():
+            identity_str = identity_path.read_text().strip()
+            identity = VaultService.identity_from_str(identity_str)
+        else:
+            # No vault key — can't verify integrity
+            raise FileNotFoundError(f"Vault identity not found at {identity_path}")
+
+        return VaultService(vault_root=vault_root, identity=identity)
+
+    def _process_vault_integrity(self, payload: dict) -> None:
+        """Run vault-wide integrity verification."""
+        job_id = payload.pop("_job_id", None)
+        attempt = payload.pop("_attempt", 1)
+        max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
+
+        job_id = self._persist_job(
+            job_type=JobType.VAULT_INTEGRITY.value,
+            payload=payload,
+            status=JobStatus.PROCESSING.value,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            job_id=job_id,
+        )
+
+        try:
+            vault_service = self._build_vault_service()
+
+            engine = self._get_engine()
+            with Session(engine) as db_session:
+                result = vault_service.verify_all(
+                    db_session,
+                    sample_pct=self._settings.vault_integrity_sample_pct,
+                )
+
+            self._last_vault_health = result
+
+            if result["healthy"]:
+                logger.info(
+                    "Vault integrity check PASSED: %d sources, %d disk files, %d hashes checked",
+                    result["total_sources"], result["total_disk_files"], result["hash_checked"],
+                )
+            else:
+                logger.warning(
+                    "Vault integrity check FAILED: missing=%d, orphans=%d, mismatches=%d",
+                    result["missing_count"], result["orphan_count"], result["hash_mismatch_count"],
+                )
+
+            self._persist_job(
+                job_type=JobType.VAULT_INTEGRITY.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc),
+                job_id=job_id,
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()
+            err_msg = str(exc)
+            logger.exception("Failed to process vault integrity check")
+
+            if attempt >= max_attempts:
+                self._persist_job(
+                    job_type=JobType.VAULT_INTEGRITY.value, payload=payload,
+                    status=JobStatus.FAILED.value, attempt=attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+            else:
+                next_attempt = attempt + 1
+                delay = self._calculate_retry_delay(attempt)
+                retry_at = datetime.now(timezone.utc) + delay
+                self._persist_job(
+                    job_type=JobType.VAULT_INTEGRITY.value, payload=payload,
+                    status=JobStatus.PENDING.value, attempt=next_attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    next_retry_at=retry_at, job_id=job_id,
+                )
+                logger.info(
+                    "Scheduled vault integrity retry %d/%d at %s",
+                    next_attempt, max_attempts, retry_at.isoformat(),
+                )
 
     def get_job_stats(self) -> dict:
         """Return job statistics for the health endpoint."""
