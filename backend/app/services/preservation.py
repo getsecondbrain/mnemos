@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 PRESERVATION_MAP: dict[str, str] = {
-    # Images → PNG
-    "image/jpeg": "png",
+    # Images — keep as-is (JPEG is universally decodable, no need to bloat with PNG)
+    "image/jpeg": "jpeg",
     "image/heic": "png",
     "image/webp": "png",
     # Images already archival
@@ -65,6 +65,7 @@ PRESERVATION_MAP: dict[str, str] = {
 
 _ARCHIVAL_MIMES: frozenset[str] = frozenset(
     {
+        "image/jpeg",
         "image/png",
         "image/tiff",
         "audio/flac",
