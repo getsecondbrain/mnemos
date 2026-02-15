@@ -208,16 +208,12 @@ export default function Graph() {
     );
   }
 
-  if (graphData.links.length === 0) {
+  if (graphData.nodes.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center">
-        <p className="text-gray-400 text-lg mb-2">No connections yet</p>
-        <p className="text-gray-500 text-sm mb-1">
-          As you add more memories, the AI will discover connections between
-          them.
-        </p>
+        <p className="text-gray-400 text-lg mb-2">No memories yet</p>
         <p className="text-gray-500 text-sm">
-          Add more memories to see the neural network grow.
+          Add memories to see the neural network grow.
         </p>
       </div>
     );
