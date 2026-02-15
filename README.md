@@ -55,7 +55,8 @@ Each layer is independent. The Cortex can be wiped and rebuilt from the Vault â€
 1. **Clone the repository**
 
    ```bash
-   git clone <repo-url> /opt/secondbrain
+   # Replace with your repository URL (e.g., git@github.com:user/secondbrain.git)
+   git clone <your-repo-url> /opt/secondbrain
    cd /opt/secondbrain
    ```
 
@@ -145,7 +146,8 @@ Each layer is independent. The Cortex can be wiped and rebuilt from the Vault â€
 5. Clone the repository and run the setup wizard:
 
    ```bash
-   git clone <repo-url> /opt/secondbrain
+   # Replace with your repository URL (e.g., git@github.com:user/secondbrain.git)
+   git clone <your-repo-url> /opt/secondbrain
    cd /opt/secondbrain
    scripts/init.sh
    ```
@@ -238,7 +240,7 @@ Mnemos uses a zero-knowledge architecture where the passphrase never leaves the 
 | Problem | Solution |
 |---------|----------|
 | Services won't start | `make logs` to check errors. Ensure Docker is running. Check `.env` exists. |
-| Ollama models not found | `docker compose exec ollama ollama pull nomic-embed-text && docker compose exec ollama ollama pull llama3.2:8b` |
+| Ollama models not found | `docker compose exec ollama ollama pull nomic-embed-text && docker compose exec ollama ollama pull llama3.2` |
 | Caddy TLS errors | Ensure ports 80/443 are open. Check DNS points to server IP. Check `SITE_ADDRESS` in `.env`. |
 | Database locked | Only one writer at a time. Check no other process has the DB open. WAL mode handles concurrent reads. |
 | Health check failing | Run `make health` for detailed diagnostics. Check `make ps` for stopped containers. |
@@ -247,7 +249,7 @@ Mnemos uses a zero-knowledge architecture where the passphrase never leaves the 
 
 ## License
 
-[License TBD]
+AGPL-3.0-or-later.
 
 ## Related Documents
 
