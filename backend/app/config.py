@@ -30,7 +30,7 @@ class Settings(BaseSettings):
         return self
     qdrant_url: str = "http://qdrant:6333"
     ollama_url: str = "http://ollama:11434"
-    llm_model: str = "llama3.2:8b"
+    llm_model: str = "llama3.2"
     embedding_model: str = "nomic-embed-text"
     # Optional cloud LLM fallback (OpenAI-compatible endpoint)
     fallback_llm_url: str = ""        # e.g. "https://api.openai.com/v1"
