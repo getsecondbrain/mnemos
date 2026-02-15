@@ -6,9 +6,13 @@ import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
 
+function hasTimezone(iso: string): boolean {
+  return iso.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(iso);
+}
+
 function formatDate(iso: string): string {
   // Backend stores UTC but may omit the Z suffix — ensure JS parses as UTC
-  const utcIso = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
+  const utcIso = hasTimezone(iso) ? iso : iso + "Z";
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -16,6 +20,13 @@ function formatDate(iso: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(utcIso));
+}
+
+function toDatetimeLocalValue(iso: string): string {
+  const utcIso = hasTimezone(iso) ? iso : iso + "Z";
+  const d = new Date(utcIso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export default function MemoryDetail() {
@@ -35,6 +46,10 @@ export default function MemoryDetail() {
   const [editContent, setEditContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  const [editingDate, setEditingDate] = useState(false);
+  const [editCapturedAt, setEditCapturedAt] = useState("");
+  const [savingDate, setSavingDate] = useState(false);
 
   const [connections, setConnections] = useState<
     { connection: Connection; otherMemoryId: string; otherTitle: string; explanation: string }[]
@@ -219,6 +234,7 @@ export default function MemoryDetail() {
     setEditTitle(displayTitle);
     setEditContent(displayContent);
     setEditing(true);
+    setEditingDate(false);
     setError(null);
   }
 
@@ -271,6 +287,44 @@ export default function MemoryDetail() {
       setError(err instanceof Error ? err.message : "Failed to delete memory.");
       setDeleting(false);
     }
+  }
+
+  async function handleDateSave() {
+    if (!id || !memory) return;
+
+    if (!editCapturedAt) {
+      setError("Please select a date.");
+      return;
+    }
+
+    const localDate = new Date(editCapturedAt);
+    if (isNaN(localDate.getTime())) {
+      setError("Invalid date. Please enter a valid date and time.");
+      return;
+    }
+
+    setSavingDate(true);
+    setError(null);
+    try {
+      const isoString = localDate.toISOString();
+
+      const updated = await updateMemory(id, {
+        captured_at: isoString,
+      });
+      setMemory(updated);
+      setEditingDate(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update date.");
+    } finally {
+      setSavingDate(false);
+    }
+  }
+
+  function startDateEditing() {
+    if (!memory) return;
+    setEditCapturedAt(toDatetimeLocalValue(memory.captured_at));
+    setEditingDate(true);
+    setError(null);
   }
 
   if (loading) {
@@ -365,9 +419,44 @@ export default function MemoryDetail() {
           </span>
         </div>
 
-        <p className="text-gray-500 text-sm mt-1">
-          {formatDate(memory.captured_at)}
-        </p>
+        <div className="flex items-center gap-2 mt-1">
+          {editingDate ? (
+            <>
+              <input
+                type="datetime-local"
+                value={editCapturedAt}
+                onChange={(e) => setEditCapturedAt(e.target.value)}
+                className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-gray-200 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              />
+              <button
+                onClick={handleDateSave}
+                disabled={savingDate}
+                className="px-2 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs rounded transition-colors"
+              >
+                {savingDate ? "Saving..." : "Save"}
+              </button>
+              <button
+                onClick={() => setEditingDate(false)}
+                className="px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-gray-500 text-sm">
+                {formatDate(memory.captured_at)}
+              </p>
+              <button
+                onClick={startDateEditing}
+                className="text-gray-600 hover:text-gray-400 text-xs transition-colors"
+                title="Edit date"
+              >
+                Edit
+              </button>
+            </>
+          )}
+        </div>
 
         {/* Photo preview */}
         {memory.content_type === "photo" && imageUrl && (
