@@ -5,7 +5,9 @@ import {
   getHeartbeatStatus,
   getTestamentConfig,
   listHeirs,
+  reprocessSources,
 } from "../services/api";
+import type { ReprocessResult } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import type { HeartbeatStatus, TestamentConfig } from "../types";
 
@@ -24,7 +26,24 @@ export default function Settings() {
     useState<TestamentConfig | null>(null);
   const [heirCount, setHeirCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+  const [reprocessing, setReprocessing] = useState(false);
+  const [reprocessResult, setReprocessResult] = useState<ReprocessResult | null>(null);
+  const [reprocessError, setReprocessError] = useState<string | null>(null);
   const { isUnlocked } = useEncryption();
+
+  async function handleReprocess() {
+    setReprocessing(true);
+    setReprocessResult(null);
+    setReprocessError(null);
+    try {
+      const result = await reprocessSources();
+      setReprocessResult(result);
+    } catch (err: unknown) {
+      setReprocessError(err instanceof Error ? err.message : "Reprocessing failed");
+    } finally {
+      setReprocessing(false);
+    }
+  }
 
   useEffect(() => {
     async function load() {
@@ -270,6 +289,53 @@ export default function Settings() {
             Automated backups via cron (configure on host)
           </p>
         </div>
+      </div>
+
+      {/* Source Reprocessing */}
+      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <h2 className="text-lg font-semibold text-gray-200 mb-3">
+          Source Reprocessing
+        </h2>
+        <p className="text-sm text-gray-400 mb-3">
+          Re-extract text from files that were uploaded before text extraction was added.
+          This enables search and AI features for older uploads.
+        </p>
+        <button
+          onClick={handleReprocess}
+          disabled={reprocessing || !isUnlocked}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded transition-colors"
+        >
+          {reprocessing ? "Reprocessing..." : "Reprocess Sources"}
+        </button>
+        {reprocessing && (
+          <p className="text-sm text-gray-400 mt-2">
+            Processing files... This may take a moment.
+          </p>
+        )}
+        {reprocessError && (
+          <p className="text-sm text-red-400 mt-2">{reprocessError}</p>
+        )}
+        {reprocessResult && (
+          <div className="mt-3 text-sm space-y-1">
+            <p className="text-gray-300">
+              Found: {reprocessResult.total_found} |
+              Reprocessed: <span className="text-green-400">{reprocessResult.reprocessed}</span> |
+              Skipped: {reprocessResult.skipped} |
+              Failed: <span className={reprocessResult.failed > 0 ? "text-red-400" : ""}>{reprocessResult.failed}</span>
+            </p>
+            {reprocessResult.details.length > 0 && (
+              <ul className="text-xs text-gray-500 mt-1 space-y-0.5">
+                {reprocessResult.details.map((d) => (
+                  <li key={d.source_id}>
+                    {d.mime_type} — {d.status}
+                    {d.text_length != null && ` (${d.text_length} chars)`}
+                    {d.error && <span className="text-red-400"> {d.error}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       {/* About */}

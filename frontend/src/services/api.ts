@@ -457,6 +457,31 @@ export async function fetchVaultFile(sourceId: string): Promise<Blob> {
   return res.blob();
 }
 
+// --- Admin endpoints --------------------------------------------------------
+
+export interface ReprocessDetail {
+  source_id: string;
+  memory_id: string;
+  mime_type: string;
+  status: string;
+  text_length: number | null;
+  error: string | null;
+}
+
+export interface ReprocessResult {
+  total_found: number;
+  reprocessed: number;
+  failed: number;
+  skipped: number;
+  details: ReprocessDetail[];
+}
+
+export async function reprocessSources(): Promise<ReprocessResult> {
+  return request<ReprocessResult>("/admin/reprocess-sources", {
+    method: "POST",
+  });
+}
+
 // --- Health -----------------------------------------------------------------
 
 export async function healthCheck(): Promise<{

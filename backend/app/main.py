@@ -9,7 +9,7 @@ import app.models  # noqa: F401 — register SQLModel tables
 
 from app.config import get_settings
 from app.db import create_db_and_tables
-from app.routers import auth, backup, chat, cortex, health, heartbeat, ingest, memories, search, tags, testament, vault
+from app.routers import admin, auth, backup, chat, cortex, health, heartbeat, ingest, memories, search, tags, testament, vault
 from app.worker import BackgroundWorker
 
 
@@ -117,6 +117,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(health.router)
 app.include_router(memories.router)
