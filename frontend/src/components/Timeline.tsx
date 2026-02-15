@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import { listMemories, listTags, fetchVaultFile, getTimelineStats } from "../services/api";
 import type { TimelineStats } from "../services/api";
@@ -168,7 +168,14 @@ export default function Timeline() {
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
   const { decrypt } = useEncryption();
+
+  useEffect(() => {
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const decryptMemories = useCallback(
     async (encrypted: Memory[]): Promise<Memory[]> => {
@@ -205,18 +212,27 @@ export default function Timeline() {
     [decrypt],
   );
 
+  const refreshStats = useCallback(() => {
+    return getTimelineStats().then((stats) => {
+      if (mountedRef.current) setTimelineStats(stats);
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     listTags().then(setAllTags).catch(() => {});
-    getTimelineStats().then(setTimelineStats).catch(() => {});
-  }, []);
+    refreshStats();
+  }, [refreshStats]);
 
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTagIds, selectedYear]);
 
-  async function loadInitial() {
-    setLoading(true);
+  async function loadInitial(options?: { background?: boolean }) {
+    const isBackground = options?.background ?? false;
+    if (!isBackground) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const data = await listMemories({
@@ -225,13 +241,58 @@ export default function Timeline() {
         year: selectedYear ?? undefined,
         order_by: "captured_at",
       });
+      if (!mountedRef.current) return;
       const decrypted = await decryptMemories(data);
+      if (!mountedRef.current) return;
       setMemories(decrypted);
       setHasMore(data.length >= PAGE_SIZE);
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(err instanceof Error ? err.message : "Failed to load memories.");
     } finally {
-      setLoading(false);
+      if (!isBackground && mountedRef.current) {
+        setLoading(false);
+      }
+    }
+  }
+
+  // Ref to always call the latest loadInitial without adding it as a dep
+  const loadInitialRef = useRef(loadInitial);
+  loadInitialRef.current = loadInitial;
+
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible" && mountedRef.current) {
+        if (refreshInFlightRef.current) return;
+        refreshInFlightRef.current = true;
+        Promise.all([
+          refreshStats(),
+          loadInitialRef.current({ background: true }),
+        ]).finally(() => {
+          refreshInFlightRef.current = false;
+        });
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [refreshStats]);
+
+  async function handleRefresh() {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        refreshStats(),
+        loadInitial({ background: true }),
+      ]);
+    } catch {
+      // Individual error handling is already in loadInitial/refreshStats
+    } finally {
+      setRefreshing(false);
+      refreshInFlightRef.current = false;
     }
   }
 
@@ -267,12 +328,35 @@ export default function Timeline() {
     return (
       <div className="space-y-3">
         <p className="text-red-400">{error}</p>
-        <button
-          onClick={() => loadInitial()}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
-        >
-          Retry
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={() => loadInitial()}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
+          >
+            Retry
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 rounded-md transition-colors flex items-center gap-2"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`}
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 4v5h5M20 20v-5h-5M4.929 9A8 8 0 0117.5 6.5L20 9M19.071 15A8 8 0 016.5 17.5L4 15"
+              />
+            </svg>
+            Refresh
+          </button>
+        </div>
       </div>
     );
   }
@@ -295,7 +379,30 @@ export default function Timeline() {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold text-gray-100 mb-6">Timeline</h2>
+      <div className="flex items-center gap-3 mb-6">
+        <h2 className="text-2xl font-bold text-gray-100">Timeline</h2>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="p-1 text-gray-400 hover:text-gray-200 disabled:opacity-50 transition-colors"
+          title="Refresh timeline"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className={`w-5 h-5 ${refreshing ? "animate-spin" : ""}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4 4v5h5M20 20v-5h-5M4.929 9A8 8 0 0117.5 6.5L20 9M19.071 15A8 8 0 016.5 17.5L4 15"
+            />
+          </svg>
+        </button>
+      </div>
 
       {/* Timeline bar */}
       {timelineStats && timelineStats.years.length > 0 && (
