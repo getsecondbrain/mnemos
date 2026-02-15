@@ -508,6 +508,23 @@ export async function reprocessSources(): Promise<ReprocessResult> {
   });
 }
 
+// --- Export endpoints --------------------------------------------------------
+
+export async function exportAllData(): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getAccessTokenFn?.();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BASE_URL}/export`, {
+    method: "POST",
+    headers,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "Export failed");
+    throw new ApiError(res.status, text);
+  }
+  return res.blob();
+}
+
 // --- Health -----------------------------------------------------------------
 
 export async function healthCheck(): Promise<{

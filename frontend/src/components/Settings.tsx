@@ -6,6 +6,7 @@ import {
   getTestamentConfig,
   listHeirs,
   reprocessSources,
+  exportAllData,
 } from "../services/api";
 import type { ReprocessResult } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
@@ -29,7 +30,31 @@ export default function Settings() {
   const [reprocessing, setReprocessing] = useState(false);
   const [reprocessResult, setReprocessResult] = useState<ReprocessResult | null>(null);
   const [reprocessError, setReprocessError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const { isUnlocked } = useEncryption();
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const blob = await exportAllData();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `mnemos-export-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Delay revoking the blob URL to avoid a race condition where the
+      // browser hasn't started reading the blob before it's revoked.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err: unknown) {
+      setExportError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   async function handleReprocess() {
     setReprocessing(true);
@@ -289,6 +314,33 @@ export default function Settings() {
             Automated backups via cron (configure on host)
           </p>
         </div>
+      </div>
+
+      {/* Data Export */}
+      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <h2 className="text-lg font-semibold text-gray-200 mb-3">
+          Data Export
+        </h2>
+        <p className="text-sm text-gray-400 mb-3">
+          Download a complete export of your brain as a portable ZIP archive.
+          Includes all memories as Markdown files, all vault files decrypted
+          to their original format, and a metadata.json with connections and tags.
+        </p>
+        <button
+          onClick={handleExport}
+          disabled={exporting || !isUnlocked}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded transition-colors"
+        >
+          {exporting ? "Exporting..." : "Export All Data"}
+        </button>
+        {exporting && (
+          <p className="text-sm text-gray-400 mt-2">
+            Generating export... This may take a while for large brains.
+          </p>
+        )}
+        {exportError && (
+          <p className="text-sm text-red-400 mt-2">{exportError}</p>
+        )}
       </div>
 
       {/* Source Reprocessing */}
