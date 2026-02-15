@@ -218,6 +218,65 @@ class TestIngestFileTextExtract:
         assert len(result.search_tokens) > 0
 
 
+# -- ingest_file (legacy document) ------------------------------------------
+
+
+class TestIngestFileLegacyDocument:
+    @pytest.mark.asyncio
+    async def test_doc_produces_text_extract(
+        self, ingestion_service: IngestionService, encryption_service: EncryptionService
+    ) -> None:
+        """DOC file → preserves to PDF, extracts text, all encrypted."""
+        fake_pres_result = PreservationResult(
+            preserved_data=b"%PDF-1.4 fake",
+            preserved_mime="application/pdf",
+            text_extract="Extracted text from old Word document",
+            original_mime="application/msword",
+            conversion_performed=True,
+            preservation_format="pdf-a+md",
+        )
+
+        with patch("app.services.ingestion.detect_mime_type",
+                    return_value="application/msword"):
+            with patch.object(
+                ingestion_service._pres, "convert",
+                new_callable=AsyncMock, return_value=fake_pres_result
+            ):
+                result = await ingestion_service.ingest_file(b"fake doc", "old.doc")
+
+        assert result.mime_type == "application/msword"
+        assert result.content_type == "document"
+        assert result.text_extract_envelope is not None
+        assert len(result.search_tokens) > 0
+
+    @pytest.mark.asyncio
+    async def test_rtf_produces_text_extract(
+        self, ingestion_service: IngestionService, encryption_service: EncryptionService
+    ) -> None:
+        """RTF file → preserves to PDF, extracts text, all encrypted."""
+        fake_pres_result = PreservationResult(
+            preserved_data=b"%PDF-1.4 fake",
+            preserved_mime="application/pdf",
+            text_extract="Extracted text from RTF document",
+            original_mime="application/rtf",
+            conversion_performed=True,
+            preservation_format="pdf-a+md",
+        )
+
+        with patch("app.services.ingestion.detect_mime_type",
+                    return_value="application/rtf"):
+            with patch.object(
+                ingestion_service._pres, "convert",
+                new_callable=AsyncMock, return_value=fake_pres_result
+            ):
+                result = await ingestion_service.ingest_file(b"fake rtf", "letter.rtf")
+
+        assert result.mime_type == "application/rtf"
+        assert result.content_type == "document"
+        assert result.text_extract_envelope is not None
+        assert len(result.search_tokens) > 0
+
+
 # -- detect_content_type / categorize_mime -----------------------------------
 
 
@@ -240,6 +299,11 @@ class TestDetectContentType:
         docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         assert ingestion_service._categorize_mime(docx) == "document"
         assert ingestion_service._categorize_mime("application/pdf") == "document"
+
+    def test_categorize_legacy_document(self, ingestion_service: IngestionService) -> None:
+        assert ingestion_service._categorize_mime("application/msword") == "document"
+        assert ingestion_service._categorize_mime("application/rtf") == "document"
+        assert ingestion_service._categorize_mime("text/rtf") == "document"
 
     def test_categorize_text(self, ingestion_service: IngestionService) -> None:
         assert ingestion_service._categorize_mime("text/plain") == "text"

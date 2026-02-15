@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import shutil
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +49,9 @@ PRESERVATION_MAP: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "pdf-a+md",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "pdf-a+md",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pdf-a+md",
+    "application/msword": "pdf-a+md",
+    "application/rtf": "pdf-a+md",
+    "text/rtf": "pdf-a+md",
     "application/pdf": "pdf+text",
     # HTML → Markdown
     "text/html": "markdown",
@@ -84,6 +89,9 @@ _MIME_INPUT_EXT: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/rtf": ".rtf",
+    "text/rtf": ".rtf",
     "text/html": ".html",
 }
 
@@ -200,6 +208,23 @@ class PreservationService:
         ):
             pdf_data, pdf_mime, md_bytes = self._convert_document(
                 file_data, mime_type, original_filename
+            )
+            text_extract = md_bytes.decode("utf-8") if md_bytes else None
+            return PreservationResult(
+                preserved_data=pdf_data,
+                preserved_mime=pdf_mime,
+                text_extract=text_extract,
+                original_mime=mime_type,
+                conversion_performed=True,
+                preservation_format="pdf-a+md",
+            )
+
+        # Legacy DOC / RTF → LibreOffice headless (run in thread to
+        # avoid blocking the event loop — LibreOffice can take 10-30s)
+        if mime_type in ("application/msword", "application/rtf", "text/rtf"):
+            pdf_data, pdf_mime, md_bytes = await asyncio.to_thread(
+                self._convert_legacy_document,
+                file_data, mime_type, original_filename,
             )
             text_extract = md_bytes.decode("utf-8") if md_bytes else None
             return PreservationResult(
@@ -376,6 +401,85 @@ class PreservationService:
             input_path.unlink(missing_ok=True)
             pdf_path.unlink(missing_ok=True)
             md_path.unlink(missing_ok=True)
+
+    def _convert_legacy_document(
+        self,
+        file_data: bytes,
+        mime_type: str,
+        original_filename: str,
+    ) -> tuple[bytes, str, bytes | None]:
+        """DOC / RTF → PDF + text extract via LibreOffice headless.
+
+        Unlike modern OOXML formats (which use pandoc), legacy .doc and .rtf
+        formats require LibreOffice for conversion.
+
+        Each invocation uses a unique LibreOffice user-profile directory
+        (``-env:UserInstallation``) so concurrent conversions don't clash
+        on the global ``~/.config/libreoffice/.~lock``.
+        """
+        input_ext = _MIME_INPUT_EXT.get(mime_type, ".doc")
+        job_id = str(uuid.uuid4())
+        input_path = self._tmp_dir / f"{job_id}{input_ext}"
+        # Unique user profile directory to avoid LibreOffice lock conflicts
+        profile_dir = tempfile.mkdtemp(prefix=f"lo_profile_{job_id}_")
+        try:
+            input_path.write_bytes(file_data)
+            logger.info("Converting %s via LibreOffice headless (job %s)", mime_type, job_id)
+
+            # Convert to PDF via LibreOffice headless
+            result = subprocess.run(
+                [
+                    "soffice",
+                    "--headless",
+                    "--norestore",
+                    f"-env:UserInstallation=file://{profile_dir}",
+                    "--convert-to", "pdf",
+                    "--outdir", str(self._tmp_dir),
+                    str(input_path),
+                ],
+                capture_output=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                raise PreservationError(
+                    f"LibreOffice PDF conversion failed: {result.stderr.decode(errors='replace')}"
+                )
+
+            # LibreOffice outputs to {input_stem}.pdf in outdir
+            pdf_path = self._tmp_dir / f"{job_id}.pdf"
+            if not pdf_path.exists():
+                raise PreservationError(
+                    f"LibreOffice PDF output not found at {pdf_path}"
+                )
+
+            # Extract text via LibreOffice headless → plain text
+            result = subprocess.run(
+                [
+                    "soffice",
+                    "--headless",
+                    "--norestore",
+                    f"-env:UserInstallation=file://{profile_dir}",
+                    "--convert-to", "txt:Text",
+                    "--outdir", str(self._tmp_dir),
+                    str(input_path),
+                ],
+                capture_output=True,
+                timeout=120,
+            )
+
+            txt_path = self._tmp_dir / f"{job_id}.txt"
+            md_bytes: bytes | None = None
+            if txt_path.exists() and result.returncode == 0:
+                md_bytes = txt_path.read_bytes()
+
+            return (pdf_path.read_bytes(), "application/pdf", md_bytes)
+        finally:
+            input_path.unlink(missing_ok=True)
+            # Clean up output files
+            for ext in (".pdf", ".txt"):
+                (self._tmp_dir / f"{job_id}{ext}").unlink(missing_ok=True)
+            # Clean up the temporary LibreOffice profile directory
+            shutil.rmtree(profile_dir, ignore_errors=True)
 
     def _convert_html(self, file_data: bytes, mime_type: str) -> tuple[bytes, str]:
         """HTML → Markdown via pandoc."""

@@ -326,7 +326,7 @@ class IngestionService:
             return "webpage"
         if mime_type.startswith(
             "application/vnd.openxmlformats"
-        ) or mime_type == "application/pdf":
+        ) or mime_type in ("application/pdf", "application/msword", "application/rtf", "text/rtf"):
             return "document"
         if mime_type.startswith("text/") or mime_type == "application/json":
             return "text"

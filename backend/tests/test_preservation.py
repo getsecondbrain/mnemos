@@ -222,6 +222,190 @@ class TestConvertDocument:
                 )
 
 
+# -- legacy document conversion (DOC / RTF) ---------------------------------
+
+
+class TestConvertLegacyDocument:
+    @pytest.mark.asyncio
+    async def test_convert_doc_via_libreoffice(
+        self, preservation_service: PreservationService, tmp_dir: Path
+    ) -> None:
+        """DOC file is converted to PDF via LibreOffice headless."""
+        with patch("app.services.preservation.subprocess.run") as mock_run, \
+             patch("app.services.preservation.uuid.uuid4") as mock_uuid, \
+             patch("app.services.preservation.tempfile.mkdtemp", return_value="/tmp/lo_test") as mock_mkdtemp, \
+             patch("app.services.preservation.shutil.rmtree") as mock_rmtree:
+            mock_uuid.return_value = "test-job-id"
+
+            def run_side_effect(cmd, **kwargs):
+                result = type("Result", (), {"returncode": 0, "stderr": b""})()
+                # Create expected output files when soffice is called
+                if "pdf" in cmd and "txt:Text" not in cmd:
+                    (tmp_dir / "test-job-id.pdf").write_bytes(b"%PDF-1.4 converted")
+                elif "txt:Text" in cmd:
+                    (tmp_dir / "test-job-id.txt").write_bytes(b"Extracted text from old doc")
+                return result
+
+            mock_run.side_effect = run_side_effect
+
+            result = await preservation_service.convert(
+                b"\xd0\xcf" * 50, "application/msword", "old.doc"
+            )
+
+        assert result.conversion_performed is True
+        assert result.preserved_mime == "application/pdf"
+        assert result.preservation_format == "pdf-a+md"
+        assert result.original_mime == "application/msword"
+        assert result.text_extract == "Extracted text from old doc"
+
+        # Verify unique profile dir was used and cleaned up
+        mock_mkdtemp.assert_called_once()
+        mock_rmtree.assert_called_once_with("/tmp/lo_test", ignore_errors=True)
+
+        # Verify -env:UserInstallation was passed to soffice
+        for call_args in mock_run.call_args_list:
+            cmd = call_args[0][0]
+            assert any(
+                arg.startswith("-env:UserInstallation=") for arg in cmd
+            ), "soffice must receive -env:UserInstallation for concurrency safety"
+
+    @pytest.mark.asyncio
+    async def test_convert_rtf_via_libreoffice(
+        self, preservation_service: PreservationService, tmp_dir: Path
+    ) -> None:
+        """RTF file is converted to PDF via LibreOffice headless."""
+        with patch("app.services.preservation.subprocess.run") as mock_run, \
+             patch("app.services.preservation.uuid.uuid4") as mock_uuid, \
+             patch("app.services.preservation.tempfile.mkdtemp", return_value="/tmp/lo_test") as mock_mkdtemp, \
+             patch("app.services.preservation.shutil.rmtree") as mock_rmtree:
+            mock_uuid.return_value = "test-job-id"
+
+            def run_side_effect(cmd, **kwargs):
+                result = type("Result", (), {"returncode": 0, "stderr": b""})()
+                if "pdf" in cmd and "txt:Text" not in cmd:
+                    (tmp_dir / "test-job-id.pdf").write_bytes(b"%PDF-1.4 rtf converted")
+                elif "txt:Text" in cmd:
+                    (tmp_dir / "test-job-id.txt").write_bytes(b"RTF extracted text")
+                return result
+
+            mock_run.side_effect = run_side_effect
+
+            result = await preservation_service.convert(
+                b"{\\rtf1 test}", "application/rtf", "letter.rtf"
+            )
+
+        assert result.conversion_performed is True
+        assert result.preserved_mime == "application/pdf"
+        assert result.preservation_format == "pdf-a+md"
+        assert result.original_mime == "application/rtf"
+        assert result.text_extract == "RTF extracted text"
+
+        # Verify profile cleanup
+        mock_rmtree.assert_called_once_with("/tmp/lo_test", ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_convert_text_rtf_via_libreoffice(
+        self, preservation_service: PreservationService, tmp_dir: Path
+    ) -> None:
+        """RTF detected as text/rtf (libmagic alias) is converted via LibreOffice."""
+        with patch("app.services.preservation.subprocess.run") as mock_run, \
+             patch("app.services.preservation.uuid.uuid4") as mock_uuid, \
+             patch("app.services.preservation.tempfile.mkdtemp", return_value="/tmp/lo_test") as mock_mkdtemp, \
+             patch("app.services.preservation.shutil.rmtree") as mock_rmtree:
+            mock_uuid.return_value = "test-job-id"
+
+            def run_side_effect(cmd, **kwargs):
+                result = type("Result", (), {"returncode": 0, "stderr": b""})()
+                if "pdf" in cmd and "txt:Text" not in cmd:
+                    (tmp_dir / "test-job-id.pdf").write_bytes(b"%PDF-1.4 rtf converted")
+                elif "txt:Text" in cmd:
+                    (tmp_dir / "test-job-id.txt").write_bytes(b"RTF text via text/rtf mime")
+                return result
+
+            mock_run.side_effect = run_side_effect
+
+            result = await preservation_service.convert(
+                b"{\\rtf1 test}", "text/rtf", "letter.rtf"
+            )
+
+        assert result.conversion_performed is True
+        assert result.preserved_mime == "application/pdf"
+        assert result.preservation_format == "pdf-a+md"
+        assert result.original_mime == "text/rtf"
+        assert result.text_extract == "RTF text via text/rtf mime"
+
+        mock_rmtree.assert_called_once_with("/tmp/lo_test", ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_libreoffice_failure_raises_error(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """When LibreOffice fails, PreservationError is raised."""
+        with patch("app.services.preservation.subprocess.run") as mock_run, \
+             patch("app.services.preservation.tempfile.mkdtemp", return_value="/tmp/lo_test"), \
+             patch("app.services.preservation.shutil.rmtree"):
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = b"LibreOffice error"
+
+            with pytest.raises(PreservationError, match="LibreOffice"):
+                preservation_service._convert_legacy_document(
+                    b"\x00" * 100, "application/msword", "old.doc"
+                )
+
+    @pytest.mark.asyncio
+    async def test_libreoffice_failure_cleans_up_profile(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """Profile dir is cleaned up even when LibreOffice fails."""
+        with patch("app.services.preservation.subprocess.run") as mock_run, \
+             patch("app.services.preservation.tempfile.mkdtemp", return_value="/tmp/lo_fail") as mock_mkdtemp, \
+             patch("app.services.preservation.shutil.rmtree") as mock_rmtree:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stderr = b"LibreOffice error"
+
+            with pytest.raises(PreservationError):
+                preservation_service._convert_legacy_document(
+                    b"\x00" * 100, "application/msword", "old.doc"
+                )
+
+        mock_rmtree.assert_called_once_with("/tmp/lo_fail", ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_libreoffice_no_text_extract(
+        self, preservation_service: PreservationService, tmp_dir: Path
+    ) -> None:
+        """When text extraction fails, text_extract is None but PDF still returned."""
+        with patch("app.services.preservation.subprocess.run") as mock_run, \
+             patch("app.services.preservation.uuid.uuid4") as mock_uuid, \
+             patch("app.services.preservation.tempfile.mkdtemp", return_value="/tmp/lo_test"), \
+             patch("app.services.preservation.shutil.rmtree"):
+            mock_uuid.return_value = "test-job-id"
+
+            call_count = 0
+
+            def run_side_effect(cmd, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # PDF conversion succeeds
+                    result = type("Result", (), {"returncode": 0, "stderr": b""})()
+                    (tmp_dir / "test-job-id.pdf").write_bytes(b"%PDF-1.4 ok")
+                    return result
+                else:
+                    # Text extraction fails
+                    return type("Result", (), {"returncode": 1, "stderr": b"text error"})()
+
+            mock_run.side_effect = run_side_effect
+
+            result = await preservation_service.convert(
+                b"\xd0\xcf" * 50, "application/msword", "old.doc"
+            )
+
+        assert result.conversion_performed is True
+        assert result.preserved_mime == "application/pdf"
+        assert result.text_extract is None
+
+
 # -- HTML conversion ---------------------------------------------------------
 
 
@@ -327,7 +511,10 @@ class TestAlreadyArchival:
         self, preservation_service: PreservationService
     ) -> None:
         """Non-archival formats return False."""
-        non_archival = ["image/jpeg", "audio/mpeg", "video/mp4", "text/html"]
+        non_archival = [
+            "image/jpeg", "audio/mpeg", "video/mp4", "text/html",
+            "application/msword", "application/rtf", "text/rtf",
+        ]
         for mime in non_archival:
             assert preservation_service._is_already_archival(mime) is False, mime
 
@@ -408,6 +595,12 @@ class TestPreservationMap:
         docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         assert PRESERVATION_MAP[docx] == "pdf-a+md"
         assert PRESERVATION_MAP["application/pdf"] == "pdf+text"
+
+    def test_legacy_document_entries(self) -> None:
+        """Verify DOC and RTF MIME types map to pdf-a+md."""
+        assert PRESERVATION_MAP["application/msword"] == "pdf-a+md"
+        assert PRESERVATION_MAP["application/rtf"] == "pdf-a+md"
+        assert PRESERVATION_MAP["text/rtf"] == "pdf-a+md"
 
 
 # -- PDF text extraction -----------------------------------------------------

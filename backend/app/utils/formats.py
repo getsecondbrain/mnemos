@@ -32,6 +32,9 @@ _MIME_TO_EXT: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/msword": ".doc",
+    "application/rtf": ".rtf",
+    "text/rtf": ".rtf",
     # Text
     "text/plain": ".txt",
     "text/markdown": ".md",
