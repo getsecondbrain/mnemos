@@ -15,6 +15,9 @@ from app.services.preservation import (
     PreservationError,
     PreservationResult,
     PreservationService,
+    _OCR_MAX_PAGES,
+    _OCR_MIN_PDF_TEXT_CHARS,
+    _OCR_MIN_PHOTO_TEXT_CHARS,
     _PDF_MAX_PAGES,
 )
 
@@ -708,3 +711,269 @@ class TestPdfTextExtraction:
         # Should only have _PDF_MAX_PAGES entries joined
         assert result is not None
         assert result.count("text") == _PDF_MAX_PAGES
+
+
+# -- OCR text extraction ----------------------------------------------------
+
+
+class TestOcrExtraction:
+    """Tests for OCR text extraction (scanned PDFs and photos)."""
+
+    @pytest.mark.asyncio
+    async def test_pdf_ocr_fallback_when_pdfplumber_empty(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """When pdfplumber returns empty text and OCR is enabled, fall back to OCR."""
+        pdf_data = b"%PDF-1.4 scanned"
+
+        test_img = Image.new("RGB", (100, 100), color=(255, 255, 255))
+
+        def convert_side_effect(data, *, dpi=300, first_page=1, last_page=1):
+            if first_page == 1:
+                return [test_img]
+            raise Exception("no more pages")
+
+        with patch("pdfplumber.open", create=True) as mock_pdfplumber, \
+             patch("pdf2image.convert_from_bytes", create=True, side_effect=convert_side_effect):
+            # pdfplumber returns empty
+            mock_page = type("MockPage", (), {"extract_text": lambda self: None})()
+            mock_pdf = mock_pdfplumber.return_value.__enter__.return_value
+            mock_pdf.pages = [mock_page]
+
+            with patch("pytesseract.image_to_string", return_value="OCR extracted text from scan"):
+                result = await preservation_service.convert(
+                    pdf_data, "application/pdf", "scanned.pdf", ocr_enabled=True
+                )
+
+        assert result.text_extract == "OCR extracted text from scan"
+        assert result.preservation_format == "pdf+text"
+
+    @pytest.mark.asyncio
+    async def test_pdf_no_ocr_when_disabled(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """When OCR is disabled, scanned PDFs return empty text (no fallback)."""
+        pdf_data = b"%PDF-1.4 scanned"
+        with patch("pdfplumber.open", create=True) as mock_pdfplumber:
+            mock_page = type("MockPage", (), {"extract_text": lambda self: None})()
+            mock_pdf = mock_pdfplumber.return_value.__enter__.return_value
+            mock_pdf.pages = [mock_page]
+
+            result = await preservation_service.convert(
+                pdf_data, "application/pdf", "scanned.pdf", ocr_enabled=False
+            )
+
+        assert result.text_extract == ""  # pdfplumber empty, no OCR fallback
+
+    @pytest.mark.asyncio
+    async def test_pdf_no_ocr_when_pdfplumber_has_enough_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """When pdfplumber returns sufficient text, OCR is NOT invoked."""
+        pdf_data = b"%PDF-1.4 text pdf"
+        long_text = "This is a sufficiently long text extract that exceeds fifty characters threshold."
+        with patch("pdfplumber.open", create=True) as mock_pdfplumber:
+            mock_page = type("MockPage", (), {"extract_text": lambda self: long_text})()
+            mock_pdf = mock_pdfplumber.return_value.__enter__.return_value
+            mock_pdf.pages = [mock_page]
+
+            # pdf2image should NOT be called
+            with patch("pdf2image.convert_from_bytes", create=True) as mock_convert:
+                result = await preservation_service.convert(
+                    pdf_data, "application/pdf", "text.pdf", ocr_enabled=True
+                )
+                mock_convert.assert_not_called()
+
+        assert result.text_extract == long_text
+
+    @pytest.mark.asyncio
+    async def test_photo_ocr_extracts_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """JPEG photo with OCR enabled extracts text if meaningful."""
+        jpeg_data = _make_jpeg_bytes()
+        with patch.object(
+            PreservationService, "_ocr_extract_text",
+            return_value="Receipt total: $42.99 paid"
+        ):
+            result = await preservation_service.convert(
+                jpeg_data, "image/jpeg", "receipt.jpg", ocr_enabled=True
+            )
+
+        assert result.text_extract == "Receipt total: $42.99 paid"
+        assert result.preserved_mime == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_photo_ocr_below_threshold_returns_none(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """Photo OCR below 20 chars is treated as noise — text_extract=None."""
+        jpeg_data = _make_jpeg_bytes()
+        with patch.object(
+            PreservationService, "_ocr_extract_text",
+            return_value="abc"  # Only 3 chars — below threshold
+        ):
+            result = await preservation_service.convert(
+                jpeg_data, "image/jpeg", "photo.jpg", ocr_enabled=True
+            )
+
+        assert result.text_extract is None
+
+    @pytest.mark.asyncio
+    async def test_photo_ocr_disabled_returns_no_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """Photo with OCR disabled produces no text extract."""
+        jpeg_data = _make_jpeg_bytes()
+        result = await preservation_service.convert(
+            jpeg_data, "image/jpeg", "photo.jpg", ocr_enabled=False
+        )
+
+        assert result.text_extract is None
+
+    @pytest.mark.asyncio
+    async def test_png_ocr_extracts_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """PNG photo (archival) with OCR enabled extracts text if meaningful."""
+        png_data = _make_png_bytes()
+        with patch.object(
+            PreservationService, "_ocr_extract_text",
+            return_value="Document text from PNG scan"
+        ):
+            result = await preservation_service.convert(
+                png_data, "image/png", "scan.png", ocr_enabled=True
+            )
+
+        assert result.text_extract == "Document text from PNG scan"
+        assert result.conversion_performed is False  # PNG is archival
+        assert result.preserved_data == png_data
+
+    @pytest.mark.asyncio
+    async def test_tiff_ocr_extracts_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """TIFF photo (archival) with OCR enabled extracts text if meaningful."""
+        tiff_data = _make_tiff_bytes()
+        with patch.object(
+            PreservationService, "_ocr_extract_text",
+            return_value="Scanned document text from TIFF"
+        ):
+            result = await preservation_service.convert(
+                tiff_data, "image/tiff", "scan.tiff", ocr_enabled=True
+            )
+
+        assert result.text_extract == "Scanned document text from TIFF"
+        assert result.conversion_performed is False  # TIFF is archival
+        assert result.preserved_data == tiff_data
+
+    @pytest.mark.asyncio
+    async def test_png_ocr_disabled_no_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """PNG photo with OCR disabled produces no text extract."""
+        png_data = _make_png_bytes()
+        result = await preservation_service.convert(
+            png_data, "image/png", "scan.png", ocr_enabled=False
+        )
+
+        assert result.text_extract is None
+        assert result.conversion_performed is False
+
+    @pytest.mark.asyncio
+    async def test_png_ocr_below_threshold_returns_none(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """PNG OCR below threshold is treated as noise."""
+        png_data = _make_png_bytes()
+        with patch.object(
+            PreservationService, "_ocr_extract_text",
+            return_value="abc"  # Below 20-char threshold
+        ):
+            result = await preservation_service.convert(
+                png_data, "image/png", "photo.png", ocr_enabled=True
+            )
+
+        assert result.text_extract is None
+
+    def test_ocr_extract_text_direct(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """Direct test of _ocr_extract_text with a mock."""
+        img = Image.new("RGB", (100, 100))
+        with patch("pytesseract.image_to_string", return_value="  Hello World  "):
+            result = preservation_service._ocr_extract_text(img)
+        assert result == "Hello World"
+
+    def test_ocr_extract_text_tesseract_not_found(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """When pytesseract is not installed, returns empty string."""
+        img = Image.new("RGB", (100, 100))
+        with patch.dict("sys.modules", {"pytesseract": None}):
+            with patch("builtins.__import__", side_effect=ImportError("no pytesseract")):
+                result = preservation_service._ocr_extract_text(img)
+        assert result == ""
+
+    def test_ocr_extract_text_failure_returns_empty(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """When OCR fails with an exception, returns empty string."""
+        img = Image.new("RGB", (100, 100))
+        with patch("pytesseract.image_to_string", side_effect=RuntimeError("tesseract crashed")):
+            result = preservation_service._ocr_extract_text(img)
+        assert result == ""
+
+    def test_ocr_extract_pdf_text_success(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """PDF OCR converts pages to images one at a time and runs tesseract on each."""
+        img1 = Image.new("RGB", (100, 100))
+        img2 = Image.new("RGB", (100, 100))
+
+        def convert_side_effect(data, *, dpi=300, first_page=1, last_page=1):
+            if first_page == 1:
+                return [img1]
+            elif first_page == 2:
+                return [img2]
+            # Page 3 — no more pages
+            raise Exception("invalid page range")
+
+        with patch("pdf2image.convert_from_bytes", create=True, side_effect=convert_side_effect) as mock_convert, \
+             patch("pytesseract.image_to_string") as mock_tess:
+            mock_tess.side_effect = ["Page 1 text", "Page 2 text"]
+
+            result = preservation_service._ocr_extract_pdf_text(b"fake pdf data")
+
+        assert "Page 1 text" in result
+        assert "Page 2 text" in result
+        # Called once per page (pages 1, 2) + once for page 3 that raises
+        assert mock_convert.call_count == 3
+
+    def test_ocr_extract_pdf_text_respects_ocr_max_pages(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """PDF OCR stops after _OCR_MAX_PAGES pages to prevent OOM."""
+        call_count = 0
+
+        def convert_side_effect(data, *, dpi=300, first_page=1, last_page=1):
+            nonlocal call_count
+            call_count += 1
+            # Always return an image (simulate a very large PDF)
+            return [Image.new("RGB", (10, 10))]
+
+        with patch("pdf2image.convert_from_bytes", create=True, side_effect=convert_side_effect), \
+             patch("pytesseract.image_to_string", return_value="text"):
+            preservation_service._ocr_extract_pdf_text(b"fake large pdf")
+
+        # Should only render up to _OCR_MAX_PAGES pages
+        assert call_count == _OCR_MAX_PAGES
+
+    def test_ocr_extract_pdf_text_pdf2image_missing(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """When pdf2image is not installed, returns empty string."""
+        with patch.dict("sys.modules", {"pdf2image": None}):
+            with patch("builtins.__import__", side_effect=ImportError("no pdf2image")):
+                result = preservation_service._ocr_extract_pdf_text(b"fake pdf")
+        assert result == ""

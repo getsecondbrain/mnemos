@@ -8,7 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     libreoffice-writer \
     pandoc \
+    poppler-utils \
     restic \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

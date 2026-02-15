@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import httpx
 from readability import Document as ReadabilityDocument
 
+from app.config import get_settings
 from app.services.encryption import EncryptedEnvelope, EncryptionService
 from app.services.preservation import (
     PreservationError,
@@ -105,7 +106,10 @@ class IngestionService:
 
         # 2. Preserve to archival format
         try:
-            pres_result = await self._pres.convert(file_data, mime_type, filename)
+            settings = get_settings()
+            pres_result = await self._pres.convert(
+                file_data, mime_type, filename, ocr_enabled=settings.ocr_enabled
+            )
         except PreservationError:
             logger.exception("Preservation failed for %s; storing original only", filename)
             pres_result = PreservationResult(

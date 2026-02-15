@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     worker_max_retries: int = 3
     worker_retry_base_delay_seconds: int = 30
     worker_retry_max_delay_seconds: int = 600  # 10 minutes cap
+    # OCR settings
+    ocr_enabled: bool = True  # Set to False if tesseract is not installed
     # Backup settings
     restic_password: str = ""
     restic_repository_local: str = ""

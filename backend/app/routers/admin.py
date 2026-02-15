@@ -34,6 +34,12 @@ _REPROCESSABLE_MIMES = [
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    # Image types — OCR can extract text from photos of documents/receipts
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/tiff",
 ]
 
 
@@ -101,7 +107,8 @@ async def reprocess_sources(
 
             # Run through preservation service to extract text
             pres_result = await preservation_svc.convert(
-                file_data, snap["mime_type"], "reprocess"
+                file_data, snap["mime_type"], "reprocess",
+                ocr_enabled=settings.ocr_enabled,
             )
 
             # Skip if no text could be extracted

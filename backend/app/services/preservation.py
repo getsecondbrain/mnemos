@@ -13,6 +13,7 @@ import asyncio
 import io
 import logging
 import shutil
+import time
 import subprocess
 import tempfile
 import uuid
@@ -77,6 +78,18 @@ _ARCHIVAL_MIMES: frozenset[str] = frozenset(
 # Maximum number of pages to extract text from in a PDF.
 # Prevents unbounded memory usage from very large PDFs.
 _PDF_MAX_PAGES: int = 2000
+
+# Minimum characters from pdfplumber extraction before falling back to OCR.
+# Below this threshold, the PDF is likely scanned/image-only.
+_OCR_MIN_PDF_TEXT_CHARS: int = 50
+
+# Minimum OCR characters for a photo to be considered meaningful text.
+# Below this, the OCR output is likely noise from image artifacts.
+_OCR_MIN_PHOTO_TEXT_CHARS: int = 20
+
+# Maximum pages to render for PDF OCR. Each page at 300 DPI uses ~25MB RAM,
+# so this is capped much lower than _PDF_MAX_PAGES to prevent OOM.
+_OCR_MAX_PAGES: int = 50
 
 # Helpers for subprocess temp-file extensions
 _MIME_INPUT_EXT: dict[str, str] = {
@@ -145,6 +158,8 @@ class PreservationService:
         file_data: bytes,
         mime_type: str,
         original_filename: str,
+        *,
+        ocr_enabled: bool = False,
     ) -> PreservationResult:
         """Convert *file_data* to its archival preservation format.
 
@@ -158,6 +173,22 @@ class PreservationService:
             # For text types, provide text extract
             if mime_type in ("text/plain", "text/markdown"):
                 text_extract = self._decode_text(file_data)
+            # For archival image types (PNG, TIFF), run OCR if enabled
+            elif ocr_enabled and mime_type.startswith("image/"):
+                try:
+                    img = Image.open(io.BytesIO(file_data))
+                    ocr_text = await asyncio.to_thread(self._ocr_extract_text, img)
+                    if len(ocr_text) >= _OCR_MIN_PHOTO_TEXT_CHARS:
+                        text_extract = ocr_text
+                        logger.info(
+                            "Photo OCR extracted %d chars from archival %s",
+                            len(ocr_text), original_filename,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Photo OCR failed for archival %s: %s",
+                        original_filename, exc,
+                    )
             return PreservationResult(
                 preserved_data=file_data,
                 preserved_mime=mime_type,
@@ -170,10 +201,24 @@ class PreservationService:
         # Dispatch based on MIME type category
         if mime_type.startswith("image/"):
             data, mime = self._convert_image(file_data, mime_type)
+            # Run OCR on photos if enabled — makes document photos, receipts, etc. searchable
+            text_extract: str | None = None
+            if ocr_enabled:
+                try:
+                    img = Image.open(io.BytesIO(file_data))
+                    ocr_text = await asyncio.to_thread(self._ocr_extract_text, img)
+                    if len(ocr_text) >= _OCR_MIN_PHOTO_TEXT_CHARS:
+                        text_extract = ocr_text
+                        logger.info(
+                            "Photo OCR extracted %d chars from %s",
+                            len(ocr_text), original_filename,
+                        )
+                except Exception as exc:
+                    logger.warning("Photo OCR failed for %s: %s", original_filename, exc)
             return PreservationResult(
                 preserved_data=data,
                 preserved_mime=mime,
-                text_extract=None,
+                text_extract=text_extract,
                 original_mime=mime_type,
                 conversion_performed=True,
                 preservation_format="png",
@@ -237,7 +282,9 @@ class PreservationService:
             )
 
         if mime_type == "application/pdf":
-            text_extract = await asyncio.to_thread(self._extract_pdf_text, file_data)
+            text_extract = await asyncio.to_thread(
+                self._extract_pdf_text, file_data, ocr_enabled=ocr_enabled
+            )
             return PreservationResult(
                 preserved_data=file_data,
                 preserved_mime="application/pdf",
@@ -538,13 +585,12 @@ class PreservationService:
         # latin-1 never raises — this is just a safety net
         return data.decode("latin-1")
 
-    @staticmethod
-    def _extract_pdf_text(file_data: bytes) -> str | None:
+    def _extract_pdf_text(self, file_data: bytes, *, ocr_enabled: bool = False) -> str | None:
         """Extract text from all pages of a PDF.
 
         Returns the concatenated text or ``None`` if the PDF is
-        encrypted / password-protected.  Returns an empty string for
-        scanned image-only PDFs (OCR is a future enhancement).
+        encrypted / password-protected.  Falls back to OCR if the
+        extracted text is near-empty and ``ocr_enabled`` is True.
         """
         try:
             import pdfplumber  # lazy import: isolate failures to PDF processing only
@@ -563,7 +609,18 @@ class PreservationService:
                         len(pdf.pages),
                         _PDF_MAX_PAGES,
                     )
-                return "\n\n".join(pages)
+                result = "\n\n".join(pages)
+
+                # Fall back to OCR if pdfplumber extracted little/no text
+                if ocr_enabled and len(result.strip()) < _OCR_MIN_PDF_TEXT_CHARS:
+                    logger.info(
+                        "PDF text extraction yielded only %d chars; falling back to OCR",
+                        len(result.strip()),
+                    )
+                    ocr_text = self._ocr_extract_pdf_text(file_data)
+                    if len(ocr_text.strip()) > len(result.strip()):
+                        return ocr_text
+                return result
         except (PDFSyntaxError, PDFPasswordIncorrect, OSError, ValueError) as exc:
             # Expected failures: encrypted, malformed, or unreadable PDFs
             logger.warning("PDF text extraction failed: %s", exc)
@@ -573,3 +630,85 @@ class PreservationService:
             # for visibility, but still degrade gracefully
             logger.error("PDF text extraction failed unexpectedly: %s", exc, exc_info=True)
             return None
+
+    @staticmethod
+    def _ocr_extract_text(image: Image.Image) -> str:
+        """Run OCR on a PIL Image and return extracted text.
+
+        Returns empty string if tesseract is not available or OCR fails.
+        """
+        try:
+            import pytesseract
+
+            start = time.monotonic()
+            text = pytesseract.image_to_string(image)
+            elapsed = time.monotonic() - start
+            logger.info("OCR completed in %.1fs, extracted %d chars", elapsed, len(text.strip()))
+            if elapsed > 10:
+                logger.warning("OCR took %.1fs — consider background processing for large images", elapsed)
+            return text.strip()
+        except ImportError:
+            logger.warning("pytesseract not installed — OCR skipped")
+            return ""
+        except Exception as exc:
+            logger.warning("OCR failed: %s", exc)
+            return ""
+
+    def _ocr_extract_pdf_text(self, file_data: bytes) -> str:
+        """Render PDF pages to images and run OCR on each.
+
+        Used as a fallback when pdfplumber extraction returns empty/near-empty
+        text (indicating a scanned/image-only PDF).
+
+        Pages are rendered one at a time (via first_page/last_page) to avoid
+        materialising all page images in memory simultaneously.  At 300 DPI
+        each letter-size page is ~25 MB, so rendering all pages of a large
+        PDF at once could easily OOM the process.
+
+        Returns concatenated OCR text from all pages (up to _OCR_MAX_PAGES).
+        """
+        try:
+            from pdf2image import convert_from_bytes
+
+            start = time.monotonic()
+            pages: list[str] = []
+            total_rendered = 0
+
+            for page_num in range(1, _OCR_MAX_PAGES + 1):
+                try:
+                    # Render a single page at a time to bound memory usage.
+                    # pdf2image page numbers are 1-based.
+                    images = convert_from_bytes(
+                        file_data,
+                        dpi=300,
+                        first_page=page_num,
+                        last_page=page_num,
+                    )
+                except Exception:
+                    # No more pages or rendering error — stop iteration
+                    break
+
+                if not images:
+                    break
+
+                img = images[0]
+                total_rendered += 1
+                try:
+                    page_text = self._ocr_extract_text(img)
+                    if page_text:
+                        pages.append(page_text)
+                finally:
+                    img.close()
+
+            elapsed = time.monotonic() - start
+            logger.info(
+                "PDF OCR completed in %.1fs: %d pages, %d chars total",
+                elapsed, total_rendered, sum(len(p) for p in pages),
+            )
+            return "\n\n".join(pages)
+        except ImportError:
+            logger.warning("pdf2image not installed — PDF OCR skipped")
+            return ""
+        except Exception as exc:
+            logger.warning("PDF OCR failed: %s", exc)
+            return ""
