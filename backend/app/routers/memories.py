@@ -213,6 +213,7 @@ async def update_memory(
 
 @router.delete("/{memory_id}", status_code=204)
 async def delete_memory(
+    request: Request,
     memory_id: str,
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
@@ -231,6 +232,36 @@ async def delete_memory(
         )
     except Exception:
         logger.warning("Git delete failed for memory %s", memory.id, exc_info=True)
+
+    # Delete dependent rows to avoid FK constraint violations
+    from sqlalchemy import text as sa_text
+
+    for table in ("search_tokens", "memory_tags", "sources"):
+        session.execute(
+            sa_text(f"DELETE FROM {table} WHERE memory_id = :mid"),  # noqa: S608
+            {"mid": memory_id},
+        )
+    # Connections reference memory_id via source_memory_id / target_memory_id
+    session.execute(
+        sa_text(
+            "DELETE FROM connections "
+            "WHERE source_memory_id = :mid OR target_memory_id = :mid"
+        ),
+        {"mid": memory_id},
+    )
+    # Clear parent_id on children (self-referential FK)
+    session.execute(
+        sa_text("UPDATE memories SET parent_id = NULL WHERE parent_id = :mid"),
+        {"mid": memory_id},
+    )
+
+    # Clean up Qdrant vectors (best-effort)
+    try:
+        embedding_svc = getattr(request.app.state, "embedding_service", None)
+        if embedding_svc:
+            await embedding_svc.delete_memory_vectors(memory_id)
+    except Exception:
+        logger.warning("Vector cleanup failed for memory %s", memory_id, exc_info=True)
 
     session.delete(memory)
     session.commit()
