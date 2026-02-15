@@ -36,16 +36,16 @@ PRESERVATION_MAP: dict[str, str] = {
     # Images already archival
     "image/png": "png",
     "image/tiff": "tiff",
-    # Audio — keep MP3 as-is (universally decodable), convert niche formats to FLAC
+    # Audio — keep originals as-is
     "audio/mpeg": "mp3",
-    "audio/aac": "flac",
-    "audio/ogg": "flac",
+    "audio/aac": "aac",
+    "audio/ogg": "ogg",
     "audio/flac": "flac",
     "audio/wav": "wav",
-    # Video — keep MP4 as-is (H.264 is universal), convert niche formats to MKV
+    # Video — keep originals as-is
     "video/mp4": "mp4",
-    "video/quicktime": "ffv1-mkv",
-    "video/webm": "ffv1-mkv",
+    "video/quicktime": "mov",
+    "video/webm": "webm",
     # Documents → PDF/A + Markdown
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "pdf-a+md",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "pdf-a+md",
@@ -69,9 +69,13 @@ _ARCHIVAL_MIMES: frozenset[str] = frozenset(
         "image/png",
         "image/tiff",
         "audio/mpeg",
+        "audio/aac",
+        "audio/ogg",
         "audio/flac",
         "audio/wav",
         "video/mp4",
+        "video/quicktime",
+        "video/webm",
         "text/markdown",
         "text/csv",
         "application/json",
