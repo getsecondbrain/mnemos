@@ -8,13 +8,15 @@ import type { Memory, Tag } from "../types";
 const PAGE_SIZE = 20;
 
 function formatDate(iso: string): string {
+  // Backend stores UTC but may omit the Z suffix — ensure JS parses as UTC
+  const utcIso = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(new Date(iso));
+  }).format(new Date(utcIso));
 }
 
 export default function Timeline() {

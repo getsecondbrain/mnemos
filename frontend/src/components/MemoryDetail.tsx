@@ -7,13 +7,15 @@ import TagInput from "./TagInput";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
 
 function formatDate(iso: string): string {
+  // Backend stores UTC but may omit the Z suffix — ensure JS parses as UTC
+  const utcIso = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(new Date(iso));
+  }).format(new Date(utcIso));
 }
 
 export default function MemoryDetail() {

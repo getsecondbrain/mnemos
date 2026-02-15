@@ -3,14 +3,15 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlmodel import Session, func, select
 
 from app.config import get_settings
 from app.db import get_session
-from app.dependencies import require_auth
+from app.dependencies import get_encryption_service, require_auth
 from app.models.memory import Memory, MemoryCreate, MemoryRead, MemoryUpdate
 from app.models.tag import MemoryTag
+from app.services.encryption import EncryptedEnvelope, EncryptionService
 from app.services.git_ops import GitOpsService
 
 logger = logging.getLogger(__name__)
@@ -20,8 +21,10 @@ router = APIRouter(prefix="/api/memories", tags=["memories"])
 
 @router.post("", response_model=MemoryRead, status_code=201)
 async def create_memory(
+    request: Request,
     body: MemoryCreate,
     _session_id: str = Depends(require_auth),
+    enc: EncryptionService = Depends(get_encryption_service),
     session: Session = Depends(get_session),
 ) -> Memory:
     memory = Memory(
@@ -58,6 +61,39 @@ async def create_memory(
             session.refresh(memory)
     except Exception:
         logger.warning("Git commit failed for memory %s", memory.id, exc_info=True)
+
+    # Submit background indexing job (search tokens + embeddings)
+    if body.content_dek and body.title_dek:
+        try:
+            content_plain = enc.decrypt(EncryptedEnvelope(
+                ciphertext=bytes.fromhex(body.content),
+                encrypted_dek=bytes.fromhex(body.content_dek),
+                algo=body.encryption_algo or "aes-256-gcm",
+                version=body.encryption_version or 1,
+            )).decode("utf-8")
+            title_plain = enc.decrypt(EncryptedEnvelope(
+                ciphertext=bytes.fromhex(body.title),
+                encrypted_dek=bytes.fromhex(body.title_dek),
+                algo=body.encryption_algo or "aes-256-gcm",
+                version=body.encryption_version or 1,
+            )).decode("utf-8")
+
+            worker = getattr(request.app.state, "worker", None)
+            if worker is not None:
+                from app.worker import Job, JobType
+                worker.submit_job(
+                    Job(
+                        job_type=JobType.INGEST,
+                        payload={
+                            "memory_id": memory.id,
+                            "plaintext": content_plain,
+                            "title_plaintext": title_plain,
+                            "session_id": _session_id,
+                        },
+                    )
+                )
+        except Exception:
+            logger.warning("Background indexing submit failed for memory %s", memory.id, exc_info=True)
 
     return memory
 

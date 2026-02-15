@@ -13,11 +13,12 @@ interface EnrichedHit extends SearchHit {
 }
 
 function formatDate(iso: string): string {
+  const utcIso = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }).format(new Date(iso));
+  }).format(new Date(utcIso));
 }
 
 export default function Search() {
