@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import traceback
 from dataclasses import dataclass
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from queue import Empty, Queue
 
-from sqlmodel import Session, select
+from sqlmodel import Session, select, text
 
 from app import auth_state
 from app.config import Settings
@@ -337,6 +338,18 @@ class BackgroundWorker:
                     conn_result.connections_skipped,
                 )
 
+            # 5. Auto-suggest tags via LLM
+            try:
+                self._auto_suggest_tags(
+                    loop, memory_id, title_plaintext, plaintext,
+                    encryption_service, engine,
+                )
+            except Exception:
+                logger.warning(
+                    "Auto-tag suggestion failed for memory %s",
+                    memory_id, exc_info=True,
+                )
+
             # Success — mark job as succeeded
             self._persist_job(
                 job_type=JobType.INGEST.value,
@@ -393,6 +406,103 @@ class BackgroundWorker:
                 )
         finally:
             loop.close()
+
+    def _auto_suggest_tags(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        memory_id: str,
+        title: str,
+        content: str,
+        encryption_service: EncryptionService,
+        engine,
+    ) -> None:
+        """Ask the LLM to suggest tags for a memory and apply them."""
+        from uuid import uuid4
+        from app.models.tag import MemoryTag, Tag
+
+        # Build a concise prompt — keep content short to avoid slow inference
+        content_preview = content[:500] if len(content) > 500 else content
+        prompt = (
+            f"Title: {title}\n"
+            f"Content: {content_preview}\n\n"
+            "Suggest 1-5 short, lowercase tags for this memory. "
+            "Tags should describe people, pets, places, topics, or categories. "
+            "Return ONLY a comma-separated list of tags, nothing else. "
+            "Example: family, vacation, beach"
+        )
+
+        response = loop.run_until_complete(
+            self._llm_service.generate(
+                prompt=prompt,
+                system="You are a tagging assistant. Output only comma-separated lowercase tags.",
+                temperature=0.3,
+            )
+        )
+
+        # Parse comma-separated tags from LLM response
+        raw_tags = [
+            t.strip().lower().rstrip(".")
+            for t in response.text.split(",")
+        ]
+        # Filter: keep non-empty tags between 2-30 chars, no weird chars
+        tag_names = []
+        for t in raw_tags:
+            cleaned = re.sub(r"[^\w\s-]", "", t).strip()
+            if 2 <= len(cleaned) <= 30:
+                tag_names.append(cleaned)
+        tag_names = tag_names[:5]  # cap at 5
+
+        if not tag_names:
+            logger.info("LLM suggested no valid tags for memory %s", memory_id)
+            return
+
+        with Session(engine) as db_session:
+            applied = []
+            now = datetime.now(timezone.utc)
+            for name in tag_names:
+                # Find or create tag
+                tag = db_session.exec(
+                    select(Tag).where(Tag.name == name)
+                ).first()
+                if not tag:
+                    tag = Tag(name=name)
+                    db_session.add(tag)
+                    db_session.flush()
+
+                # Skip if already associated
+                existing = db_session.exec(
+                    select(MemoryTag).where(
+                        MemoryTag.memory_id == memory_id,
+                        MemoryTag.tag_id == tag.id,
+                    )
+                ).first()
+                if existing:
+                    continue
+
+                db_session.add(MemoryTag(memory_id=memory_id, tag_id=tag.id))
+
+                # Index tag tokens for search
+                tokens = encryption_service.generate_search_tokens(name)
+                for token_hmac in tokens:
+                    db_session.execute(
+                        text(
+                            "INSERT OR IGNORE INTO search_tokens "
+                            "(id, memory_id, token_hmac, token_type, created_at) "
+                            "VALUES (:id, :memory_id, :token_hmac, :token_type, :created_at)"
+                        ).bindparams(
+                            id=str(uuid4()),
+                            memory_id=memory_id,
+                            token_hmac=token_hmac,
+                            token_type="tag",
+                            created_at=now.isoformat(),
+                        )
+                    )
+                applied.append(name)
+
+            db_session.commit()
+            logger.info(
+                "Auto-tagged memory %s with: %s", memory_id, ", ".join(applied)
+            )
 
     def _process_heartbeat_check(self, payload: dict) -> None:
         """Check heartbeat deadlines and dispatch alerts if overdue."""

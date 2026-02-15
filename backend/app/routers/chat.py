@@ -11,8 +11,10 @@ import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlmodel import Session
 
 from app import auth_state
+from app.db import engine
 from app.routers.auth import _decode_token
 from app.services.embedding import EmbeddingError, EmbeddingService
 from app.services.encryption import EncryptionService
@@ -129,10 +131,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
         await websocket.close(code=4003)
         return
 
+    db_session = Session(engine)
     rag_service = RAGService(
         embedding_service=embedding_service,
         llm_service=llm_service,
         encryption_service=encryption_service,
+        db_session=db_session,
     )
 
     # --- Message loop ---
@@ -172,3 +176,5 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 )
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected (session=%s)", session_id)
+    finally:
+        db_session.close()

@@ -1,6 +1,6 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag } from "../services/api";
+import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag, fetchVaultFile } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
@@ -42,6 +42,7 @@ export default function MemoryDetail() {
   const [connectionsLoading, setConnectionsLoading] = useState(false);
 
   const [memoryTags, setMemoryTags] = useState<MemoryTagType[]>([]);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -50,6 +51,31 @@ export default function MemoryDetail() {
     loadTags(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Fetch vault file for photo/video/document memories
+  useEffect(() => {
+    if (!memory?.source_id) return;
+    if (memory.content_type !== "photo") return;
+
+    let revoked = false;
+    fetchVaultFile(memory.source_id)
+      .then((blob) => {
+        if (revoked) return;
+        const url = URL.createObjectURL(blob);
+        setImageUrl(url);
+      })
+      .catch(() => {
+        // Silently ignore — image is supplementary
+      });
+
+    return () => {
+      revoked = true;
+      setImageUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    };
+  }, [memory?.source_id, memory?.content_type]);
 
   async function decryptMemory(m: Memory): Promise<{ title: string; content: string }> {
     if (m.title_dek && m.content_dek) {
@@ -342,6 +368,17 @@ export default function MemoryDetail() {
         <p className="text-gray-500 text-sm mt-1">
           {formatDate(memory.captured_at)}
         </p>
+
+        {/* Photo preview */}
+        {memory.content_type === "photo" && imageUrl && (
+          <div className="mt-6">
+            <img
+              src={imageUrl}
+              alt={displayTitle}
+              className="max-w-full rounded-lg border border-gray-700"
+            />
+          </div>
+        )}
 
         <div className="mt-6 text-gray-200 whitespace-pre-wrap">
           {displayContent}

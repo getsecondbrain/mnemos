@@ -1,9 +1,39 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { listMemories, listTags } from "../services/api";
+import { listMemories, listTags, fetchVaultFile } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
 import type { Memory, Tag } from "../types";
+
+function Thumbnail({ sourceId }: { sourceId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let revoked = false;
+    fetchVaultFile(sourceId)
+      .then((blob) => {
+        if (revoked) return;
+        setUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => {});
+    return () => {
+      revoked = true;
+      setUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    };
+  }, [sourceId]);
+
+  if (!url) return <div className="w-16 h-16 rounded bg-gray-800 shrink-0" />;
+  return (
+    <img
+      src={url}
+      alt=""
+      className="w-16 h-16 rounded object-cover shrink-0 border border-gray-700"
+    />
+  );
+}
 
 const PAGE_SIZE = 20;
 
@@ -191,22 +221,29 @@ export default function Timeline() {
             to={`/memory/${memory.id}`}
             className="block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
           >
-            <div className="flex items-start justify-between gap-3">
-              <h3 className="text-gray-100 font-semibold truncate">
-                {memory.title}
-              </h3>
-              <span className="shrink-0 text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
-                {memory.content_type}
-              </span>
+            <div className="flex gap-4">
+              {memory.content_type === "photo" && memory.source_id && (
+                <Thumbnail sourceId={memory.source_id} />
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between gap-3">
+                  <h3 className="text-gray-100 font-semibold truncate">
+                    {memory.title}
+                  </h3>
+                  <span className="shrink-0 text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
+                    {memory.content_type}
+                  </span>
+                </div>
+                <p className="text-gray-400 text-sm mt-1 line-clamp-2">
+                  {memory.content.length > 150
+                    ? `${memory.content.slice(0, 150)}...`
+                    : memory.content}
+                </p>
+                <p className="text-gray-500 text-xs mt-2">
+                  {formatDate(memory.captured_at)}
+                </p>
+              </div>
             </div>
-            <p className="text-gray-400 text-sm mt-1 line-clamp-2">
-              {memory.content.length > 150
-                ? `${memory.content.slice(0, 150)}...`
-                : memory.content}
-            </p>
-            <p className="text-gray-500 text-xs mt-2">
-              {formatDate(memory.captured_at)}
-            </p>
           </Link>
         ))}
       </div>

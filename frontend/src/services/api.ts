@@ -422,6 +422,21 @@ export async function removeTagFromMemory(memoryId: string, tagId: string): Prom
   });
 }
 
+// --- Vault endpoints ---------------------------------------------------------
+
+export async function fetchVaultFile(sourceId: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getAccessTokenFn?.();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${BASE_URL}/vault/${sourceId}`, { headers });
+  if (!res.ok) {
+    throw new ApiError(res.status, "Failed to fetch vault file");
+  }
+  return res.blob();
+}
+
 // --- Health -----------------------------------------------------------------
 
 export async function healthCheck(): Promise<{

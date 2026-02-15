@@ -1,14 +1,16 @@
 """Tag router — CRUD for tags and memory-tag associations."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session, select, text
 
 from app.db import get_session
-from app.dependencies import require_auth
+from app.dependencies import get_encryption_service, require_auth
 from app.models.memory import Memory
 from app.models.tag import (
     MemoryTag,
@@ -18,6 +20,9 @@ from app.models.tag import (
     TagRead,
     TagUpdate,
 )
+from app.services.encryption import EncryptionService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 memory_tags_router = APIRouter(prefix="/api/memories", tags=["tags"])
@@ -140,6 +145,7 @@ async def add_tags_to_memory(
     memory_id: str,
     body: AddTagsRequest,
     _session_id: str = Depends(require_auth),
+    enc: EncryptionService = Depends(get_encryption_service),
     session: Session = Depends(get_session),
 ) -> list[MemoryTagRead]:
     memory = session.get(Memory, memory_id)
@@ -161,6 +167,8 @@ async def add_tags_to_memory(
         ).first()
         if not existing:
             session.add(MemoryTag(memory_id=memory_id, tag_id=tid))
+            # Index tag name as search tokens so chat/search can find this memory by tag
+            _index_tag_tokens(memory_id, tag.name, enc, session)
 
     session.commit()
     return _get_memory_tags(memory_id, session)
@@ -171,6 +179,7 @@ async def remove_tag_from_memory(
     memory_id: str,
     tag_id: str,
     _session_id: str = Depends(require_auth),
+    enc: EncryptionService = Depends(get_encryption_service),
     session: Session = Depends(get_session),
 ) -> None:
     memory = session.get(Memory, memory_id)
@@ -187,6 +196,11 @@ async def remove_tag_from_memory(
         raise HTTPException(
             status_code=404, detail="Tag association not found"
         )
+
+    # Remove tag search tokens for this memory
+    tag = session.get(Tag, tag_id)
+    if tag:
+        _remove_tag_tokens(memory_id, tag.name, enc, session)
 
     session.delete(assoc)
     session.commit()
@@ -223,3 +237,68 @@ def _get_memory_tags(memory_id: str, session: Session) -> list[MemoryTagRead]:
         )
         for mt, tag in results
     ]
+
+
+@router.post("/reindex", status_code=200)
+async def reindex_all_tag_tokens(
+    _session_id: str = Depends(require_auth),
+    enc: EncryptionService = Depends(get_encryption_service),
+    session: Session = Depends(get_session),
+) -> dict:
+    """One-time backfill: index search tokens for all existing memory-tag associations."""
+    results = session.exec(
+        select(MemoryTag, Tag)
+        .where(MemoryTag.tag_id == Tag.id)
+    ).all()
+
+    count = 0
+    for mt, tag in results:
+        _index_tag_tokens(mt.memory_id, tag.name, enc, session)
+        count += 1
+
+    session.commit()
+    return {"reindexed": count}
+
+
+def _index_tag_tokens(
+    memory_id: str,
+    tag_name: str,
+    enc: EncryptionService,
+    session: Session,
+) -> None:
+    """Index a tag's name as search tokens (type='tag') for a memory."""
+    tokens = enc.generate_search_tokens(tag_name)
+    now = datetime.now(timezone.utc).isoformat()
+    for token_hmac in tokens:
+        session.execute(
+            text(
+                "INSERT OR IGNORE INTO search_tokens (id, memory_id, token_hmac, token_type, created_at) "
+                "VALUES (:id, :memory_id, :token_hmac, :token_type, :created_at)"
+            ).bindparams(
+                id=str(uuid4()),
+                memory_id=memory_id,
+                token_hmac=token_hmac,
+                token_type="tag",
+                created_at=now,
+            )
+        )
+
+
+def _remove_tag_tokens(
+    memory_id: str,
+    tag_name: str,
+    enc: EncryptionService,
+    session: Session,
+) -> None:
+    """Remove search tokens for a specific tag from a memory."""
+    tokens = enc.generate_search_tokens(tag_name)
+    for token_hmac in tokens:
+        session.execute(
+            text(
+                "DELETE FROM search_tokens "
+                "WHERE memory_id = :memory_id AND token_hmac = :token_hmac AND token_type = 'tag'"
+            ).bindparams(
+                memory_id=memory_id,
+                token_hmac=token_hmac,
+            )
+        )
