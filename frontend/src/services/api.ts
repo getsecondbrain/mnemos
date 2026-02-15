@@ -137,6 +137,8 @@ export async function listMemories(params?: {
   limit?: number;
   content_type?: string;
   tag_ids?: string[];
+  year?: number;
+  order_by?: string;
 }): Promise<Memory[]> {
   const query = new URLSearchParams();
   if (params?.skip != null) query.set("skip", String(params.skip));
@@ -147,8 +149,26 @@ export async function listMemories(params?: {
       query.append("tag_ids", tid);
     }
   }
+  if (params?.year != null) query.set("year", String(params.year));
+  if (params?.order_by) query.set("order_by", params.order_by);
   const qs = query.toString();
   return request<Memory[]>(`/memories${qs ? `?${qs}` : ""}`);
+}
+
+export interface TimelineYearStat {
+  year: number;
+  count: number;
+}
+
+export interface TimelineStats {
+  years: TimelineYearStat[];
+  total: number;
+  earliest_year: number | null;
+  latest_year: number | null;
+}
+
+export async function getTimelineStats(): Promise<TimelineStats> {
+  return request<TimelineStats>("/memories/stats/timeline");
 }
 
 export async function getMemory(id: string): Promise<Memory> {

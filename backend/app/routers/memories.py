@@ -98,18 +98,55 @@ async def create_memory(
     return memory
 
 
+@router.get("/stats/timeline")
+async def timeline_stats(
+    _session_id: str = Depends(require_auth),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Return memory counts grouped by year for the timeline bar."""
+    from sqlalchemy import text as sa_text
+
+    # Must use session.execute() (not session.exec()) because exec() calls
+    # .scalars() which returns only the first column, dropping the count.
+    rows = session.execute(
+        sa_text(
+            "SELECT strftime('%Y', captured_at) AS year, COUNT(*) AS count "
+            "FROM memories GROUP BY 1 ORDER BY 1"
+        )
+    ).all()
+
+    years = [{"year": int(r[0]), "count": r[1]} for r in rows if r[0]]  # type: ignore[index]
+    total = sum(y["count"] for y in years)
+    earliest_year = years[0]["year"] if years else None
+    latest_year = years[-1]["year"] if years else None
+
+    return {
+        "years": years,
+        "total": total,
+        "earliest_year": earliest_year,
+        "latest_year": latest_year,
+    }
+
+
 @router.get("", response_model=list[MemoryRead])
 async def list_memories(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     content_type: str | None = None,
     tag_ids: list[str] | None = Query(None, description="Filter by tag IDs (AND logic)"),
+    year: int | None = Query(None, description="Filter by captured_at year"),
+    order_by: str = Query("captured_at", description="Sort field: captured_at or created_at"),
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> list[Memory]:
-    statement = select(Memory).order_by(Memory.created_at.desc())  # type: ignore[union-attr]
+    order_col = Memory.captured_at if order_by == "captured_at" else Memory.created_at
+    statement = select(Memory).order_by(order_col.desc())  # type: ignore[union-attr]
     if content_type:
         statement = statement.where(Memory.content_type == content_type)  # type: ignore[arg-type]
+    if year is not None:
+        start_dt = datetime(year, 1, 1, tzinfo=timezone.utc)
+        end_dt = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+        statement = statement.where(Memory.captured_at >= start_dt).where(Memory.captured_at <= end_dt)  # type: ignore[arg-type]
     if tag_ids:
         statement = (
             statement

@@ -350,6 +350,17 @@ class BackgroundWorker:
                     memory_id, exc_info=True,
                 )
 
+            # 6. Auto-extract historical date from content
+            try:
+                self._auto_extract_date(
+                    loop, memory_id, title_plaintext, plaintext, engine,
+                )
+            except Exception:
+                logger.warning(
+                    "Auto date extraction failed for memory %s",
+                    memory_id, exc_info=True,
+                )
+
             # Success — mark job as succeeded
             self._persist_job(
                 job_type=JobType.INGEST.value,
@@ -502,6 +513,115 @@ class BackgroundWorker:
             db_session.commit()
             logger.info(
                 "Auto-tagged memory %s with: %s", memory_id, ", ".join(applied)
+            )
+
+    def _auto_extract_date(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        memory_id: str,
+        title: str,
+        content: str,
+        engine,
+    ) -> None:
+        """Ask the LLM to extract the actual historical date from memory content.
+
+        If the content references a specific date (email header, letter date,
+        timestamp, etc.), update captured_at to that date instead of the upload date.
+        """
+        from app.models.memory import Memory
+
+        # Build prompt with title + first 1000 chars of content
+        content_preview = content[:1000] if len(content) > 1000 else content
+        prompt = (
+            f"Title: {title}\n"
+            f"Content: {content_preview}\n\n"
+            "Extract the actual date this content was originally created or sent. "
+            "Look for email headers, letter dates, timestamps, or date references. "
+            "Return ONLY one of:\n"
+            "- A date in YYYY-MM-DD format (e.g. 2004-06-24)\n"
+            "- A year in YYYY format if only the year is known (e.g. 2004)\n"
+            "- The word CURRENT if the content appears to be from today or has no historical date\n"
+            "Return nothing else."
+        )
+
+        response = loop.run_until_complete(
+            self._llm_service.generate(
+                prompt=prompt,
+                system="You are a date extraction assistant. Output only a date (YYYY-MM-DD), a year (YYYY), or CURRENT.",
+                temperature=0.1,
+            )
+        )
+
+        raw = response.text.strip().strip('"').strip("'")
+
+        # If LLM says CURRENT, nothing to do
+        if raw.upper() == "CURRENT":
+            logger.debug("No historical date found for memory %s", memory_id)
+            return
+
+        # Parse the date — try YYYY-MM-DD first, then YYYY
+        extracted_date: datetime | None = None
+        date_match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", raw)
+        if date_match:
+            try:
+                extracted_date = datetime(
+                    int(date_match.group(1)),
+                    int(date_match.group(2)),
+                    int(date_match.group(3)),
+                    tzinfo=timezone.utc,
+                )
+            except ValueError:
+                pass
+        else:
+            year_match = re.match(r"^(\d{4})$", raw)
+            if year_match:
+                try:
+                    extracted_date = datetime(
+                        int(year_match.group(1)), 1, 1, tzinfo=timezone.utc
+                    )
+                except ValueError:
+                    pass
+
+        if extracted_date is None:
+            logger.debug(
+                "Could not parse date from LLM response for memory %s: %r",
+                memory_id, raw,
+            )
+            return
+
+        # Sanity check: no future dates
+        now = datetime.now(timezone.utc)
+        if extracted_date > now:
+            logger.debug(
+                "Ignoring future date %s for memory %s", raw, memory_id
+            )
+            return
+
+        # Check if existing captured_at is already close (within 1 day)
+        with Session(engine) as db_session:
+            memory = db_session.get(Memory, memory_id)
+            if memory is None:
+                return
+
+            existing = memory.captured_at
+            if existing.tzinfo is None:
+                existing = existing.replace(tzinfo=timezone.utc)
+
+            if abs((existing - extracted_date).total_seconds()) < 86400:
+                logger.debug(
+                    "Existing captured_at already close for memory %s, skipping",
+                    memory_id,
+                )
+                return
+
+            memory.captured_at = extracted_date
+            db_session.add(memory)
+            db_session.commit()
+            logger.info(
+                "Updated captured_at for memory %s to %s (was %s)",
+                memory_id,
+                extracted_date.isoformat(),
+                existing.isoformat(),
             )
 
     def _process_heartbeat_check(self, payload: dict) -> None:

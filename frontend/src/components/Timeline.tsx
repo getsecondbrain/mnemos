@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { listMemories, listTags, fetchVaultFile } from "../services/api";
+import { listMemories, listTags, fetchVaultFile, getTimelineStats } from "../services/api";
+import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
 import type { Memory, Tag } from "../types";
@@ -35,6 +36,114 @@ function Thumbnail({ sourceId }: { sourceId: string }) {
   );
 }
 
+// --- Timeline Bar (Internet Archive–style) ---
+
+function TimelineBar({
+  stats,
+  selectedYear,
+  onSelectYear,
+}: {
+  stats: TimelineStats;
+  selectedYear: number | null;
+  onSelectYear: (year: number | null) => void;
+}) {
+  if (!stats.earliest_year || !stats.latest_year) return null;
+
+  const currentYear = new Date().getFullYear();
+  const startYear = stats.earliest_year;
+  const endYear = Math.max(stats.latest_year, currentYear);
+  const totalYears = endYear - startYear + 1;
+
+  // Build a map of year -> count for O(1) lookup
+  const countByYear = new Map<number, number>();
+  for (const entry of stats.years) {
+    countByYear.set(entry.year, entry.count);
+  }
+
+  const maxCount = Math.max(...stats.years.map((y) => y.count), 1);
+
+  // Determine label frequency — show all if <=15 years, else every 5th
+  const showLabel = (year: number) => {
+    if (totalYears <= 15) return true;
+    if (year === startYear || year === endYear) return true;
+    return year % 5 === 0;
+  };
+
+  return (
+    <div className="mb-6">
+      {selectedYear != null && (
+        <div className="mb-2 flex items-center gap-2 text-sm text-gray-300">
+          <span>
+            {countByYear.get(selectedYear) ?? 0} memories from {selectedYear}
+          </span>
+          <button
+            onClick={() => onSelectYear(null)}
+            className="text-xs text-gray-400 hover:text-gray-200 underline"
+          >
+            Clear filter
+          </button>
+        </div>
+      )}
+      <div className="flex items-end gap-px" style={{ height: 64 }}>
+        {Array.from({ length: totalYears }, (_, i) => {
+          const year = startYear + i;
+          const count = countByYear.get(year) ?? 0;
+          const heightPct = count > 0 ? Math.max((count / maxCount) * 100, 8) : 0;
+          const isSelected = selectedYear === year;
+          const isCurrent = year === currentYear;
+
+          let barColor = "bg-gray-600";
+          if (isSelected) barColor = "bg-blue-500";
+          else if (isCurrent) barColor = "bg-yellow-500";
+          else if (count > 0) barColor = "bg-gray-400";
+
+          return (
+            <button
+              key={year}
+              onClick={() => onSelectYear(isSelected ? null : year)}
+              className="flex-1 flex flex-col items-center justify-end group relative"
+              style={{ minWidth: 0, height: "100%" }}
+              title={`${year}: ${count} memories`}
+            >
+              {count > 0 && (
+                <div
+                  className={`w-full rounded-t-sm transition-colors ${barColor} group-hover:bg-blue-400`}
+                  style={{
+                    height: `${heightPct}%`,
+                    minHeight: 3,
+                  }}
+                />
+              )}
+              {count === 0 && (
+                <div
+                  className="w-full bg-gray-800 group-hover:bg-gray-700 transition-colors"
+                  style={{ height: 1 }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex gap-px mt-1">
+        {Array.from({ length: totalYears }, (_, i) => {
+          const year = startYear + i;
+          return (
+            <div key={year} className="flex-1 text-center" style={{ minWidth: 0 }}>
+              {showLabel(year) && (
+                <span className="text-[9px] text-gray-500 leading-none">
+                  {totalYears > 30 ? `'${String(year).slice(2)}` : year}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// --- Main Timeline ---
+
 const PAGE_SIZE = 20;
 
 function formatDate(iso: string): string {
@@ -57,6 +166,8 @@ export default function Timeline() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [selectedYear, setSelectedYear] = useState<number | null>(null);
+  const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
   const { decrypt } = useEncryption();
 
   const decryptMemories = useCallback(
@@ -96,20 +207,23 @@ export default function Timeline() {
 
   useEffect(() => {
     listTags().then(setAllTags).catch(() => {});
+    getTimelineStats().then(setTimelineStats).catch(() => {});
   }, []);
 
   useEffect(() => {
-    loadInitial(selectedTagIds);
+    loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTagIds]);
+  }, [selectedTagIds, selectedYear]);
 
-  async function loadInitial(tagIds?: string[]) {
+  async function loadInitial() {
     setLoading(true);
     setError(null);
     try {
       const data = await listMemories({
         limit: PAGE_SIZE,
-        tag_ids: tagIds && tagIds.length > 0 ? tagIds : undefined,
+        tag_ids: selectedTagIds.length > 0 ? selectedTagIds : undefined,
+        year: selectedYear ?? undefined,
+        order_by: "captured_at",
       });
       const decrypted = await decryptMemories(data);
       setMemories(decrypted);
@@ -128,6 +242,8 @@ export default function Timeline() {
         skip: memories.length,
         limit: PAGE_SIZE,
         tag_ids: selectedTagIds.length > 0 ? selectedTagIds : undefined,
+        year: selectedYear ?? undefined,
+        order_by: "captured_at",
       });
       const decrypted = await decryptMemories(data);
       setMemories((prev) => [...prev, ...decrypted]);
@@ -139,6 +255,10 @@ export default function Timeline() {
     }
   }
 
+  function handleSelectYear(year: number | null) {
+    setSelectedYear(year);
+  }
+
   if (loading) {
     return <p className="text-gray-400">Loading...</p>;
   }
@@ -148,7 +268,7 @@ export default function Timeline() {
       <div className="space-y-3">
         <p className="text-red-400">{error}</p>
         <button
-          onClick={() => loadInitial(selectedTagIds)}
+          onClick={() => loadInitial()}
           className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
         >
           Retry
@@ -157,7 +277,7 @@ export default function Timeline() {
     );
   }
 
-  if (memories.length === 0) {
+  if (!timelineStats && memories.length === 0) {
     return (
       <div className="text-center py-12">
         <p className="text-gray-400 mb-4">
@@ -176,6 +296,15 @@ export default function Timeline() {
   return (
     <div>
       <h2 className="text-2xl font-bold text-gray-100 mb-6">Timeline</h2>
+
+      {/* Timeline bar */}
+      {timelineStats && timelineStats.years.length > 0 && (
+        <TimelineBar
+          stats={timelineStats}
+          selectedYear={selectedYear}
+          onSelectYear={handleSelectYear}
+        />
+      )}
 
       {/* Tag filter */}
       {allTags.length > 0 && (
@@ -214,41 +343,47 @@ export default function Timeline() {
         </div>
       )}
 
-      <div className="space-y-4">
-        {memories.map((memory) => (
-          <Link
-            key={memory.id}
-            to={`/memory/${memory.id}`}
-            className="block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
-          >
-            <div className="flex gap-4">
-              {memory.content_type === "photo" && memory.source_id && (
-                <Thumbnail sourceId={memory.source_id} />
-              )}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-start justify-between gap-3">
-                  <h3 className="text-gray-100 font-semibold truncate">
-                    {memory.title}
-                  </h3>
-                  <span className="shrink-0 text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
-                    {memory.content_type}
-                  </span>
+      {memories.length === 0 ? (
+        <p className="text-gray-500 text-center py-8">
+          No memories{selectedYear ? ` from ${selectedYear}` : ""}{selectedTagIds.length > 0 ? " matching filters" : ""}.
+        </p>
+      ) : (
+        <div className="space-y-4">
+          {memories.map((memory) => (
+            <Link
+              key={memory.id}
+              to={`/memory/${memory.id}`}
+              className="block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
+            >
+              <div className="flex gap-4">
+                {memory.content_type === "photo" && memory.source_id && (
+                  <Thumbnail sourceId={memory.source_id} />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="text-gray-100 font-semibold truncate">
+                      {memory.title}
+                    </h3>
+                    <span className="shrink-0 text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
+                      {memory.content_type}
+                    </span>
+                  </div>
+                  <p className="text-gray-400 text-sm mt-1 line-clamp-2">
+                    {memory.content.length > 150
+                      ? `${memory.content.slice(0, 150)}...`
+                      : memory.content}
+                  </p>
+                  <p className="text-gray-500 text-xs mt-2">
+                    {formatDate(memory.captured_at)}
+                  </p>
                 </div>
-                <p className="text-gray-400 text-sm mt-1 line-clamp-2">
-                  {memory.content.length > 150
-                    ? `${memory.content.slice(0, 150)}...`
-                    : memory.content}
-                </p>
-                <p className="text-gray-500 text-xs mt-2">
-                  {formatDate(memory.captured_at)}
-                </p>
               </div>
-            </div>
-          </Link>
-        ))}
-      </div>
+            </Link>
+          ))}
+        </div>
+      )}
 
-      {hasMore && (
+      {hasMore && memories.length > 0 && (
         <div className="mt-6 text-center">
           <button
             onClick={loadMore}
