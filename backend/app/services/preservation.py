@@ -9,6 +9,7 @@ never discarded.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import subprocess
@@ -46,7 +47,7 @@ PRESERVATION_MAP: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "pdf-a+md",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "pdf-a+md",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pdf-a+md",
-    "application/pdf": "pdf",
+    "application/pdf": "pdf+text",
     # HTML → Markdown
     "text/html": "markdown",
     # Text → UTF-8 Markdown
@@ -63,11 +64,14 @@ _ARCHIVAL_MIMES: frozenset[str] = frozenset(
         "audio/flac",
         "audio/wav",
         "text/markdown",
-        "application/pdf",
         "text/csv",
         "application/json",
     }
 )
+
+# Maximum number of pages to extract text from in a PDF.
+# Prevents unbounded memory usage from very large PDFs.
+_PDF_MAX_PAGES: int = 2000
 
 # Helpers for subprocess temp-file extensions
 _MIME_INPUT_EXT: dict[str, str] = {
@@ -205,6 +209,17 @@ class PreservationService:
                 original_mime=mime_type,
                 conversion_performed=True,
                 preservation_format="pdf-a+md",
+            )
+
+        if mime_type == "application/pdf":
+            text_extract = await asyncio.to_thread(self._extract_pdf_text, file_data)
+            return PreservationResult(
+                preserved_data=file_data,
+                preserved_mime="application/pdf",
+                text_extract=text_extract,
+                original_mime=mime_type,
+                conversion_performed=False,
+                preservation_format="pdf+text",
             )
 
         if mime_type == "text/html":
@@ -418,3 +433,39 @@ class PreservationService:
                 continue
         # latin-1 never raises — this is just a safety net
         return data.decode("latin-1")
+
+    @staticmethod
+    def _extract_pdf_text(file_data: bytes) -> str | None:
+        """Extract text from all pages of a PDF.
+
+        Returns the concatenated text or ``None`` if the PDF is
+        encrypted / password-protected.  Returns an empty string for
+        scanned image-only PDFs (OCR is a future enhancement).
+        """
+        try:
+            import pdfplumber  # lazy import: isolate failures to PDF processing only
+            from pdfminer.pdfparser import PDFSyntaxError
+            from pdfminer.pdfdocument import PDFPasswordIncorrect
+
+            with pdfplumber.open(io.BytesIO(file_data)) as pdf:
+                pages: list[str] = []
+                for page in pdf.pages[:_PDF_MAX_PAGES]:
+                    text = page.extract_text()
+                    if text:
+                        pages.append(text)
+                if len(pdf.pages) > _PDF_MAX_PAGES:
+                    logger.warning(
+                        "PDF has %d pages; text extracted from first %d only",
+                        len(pdf.pages),
+                        _PDF_MAX_PAGES,
+                    )
+                return "\n\n".join(pages)
+        except (PDFSyntaxError, PDFPasswordIncorrect, OSError, ValueError) as exc:
+            # Expected failures: encrypted, malformed, or unreadable PDFs
+            logger.warning("PDF text extraction failed: %s", exc)
+            return None
+        except Exception as exc:
+            # Unexpected errors (programming bugs, etc.) — log at ERROR
+            # for visibility, but still degrade gracefully
+            logger.error("PDF text extraction failed unexpectedly: %s", exc, exc_info=True)
+            return None

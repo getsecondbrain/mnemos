@@ -15,6 +15,7 @@ from app.services.preservation import (
     PreservationError,
     PreservationResult,
     PreservationService,
+    _PDF_MAX_PAGES,
 )
 
 
@@ -184,16 +185,25 @@ class TestConvertVideo:
 
 class TestConvertDocument:
     @pytest.mark.asyncio
-    async def test_pdf_passthrough(
+    async def test_pdf_text_extraction(
         self, preservation_service: PreservationService
     ) -> None:
-        """PDF input returns unchanged (already archival)."""
+        """PDF passes through unchanged but text is extracted."""
         pdf_data = b"%PDF-1.4 fake pdf content"
-        result = await preservation_service.convert(pdf_data, "application/pdf", "doc.pdf")
+        with patch("pdfplumber.open", create=True) as mock_open:
+            mock_pdf = mock_open.return_value.__enter__.return_value
+            mock_pdf.pages = []
+
+            result = await preservation_service.convert(
+                pdf_data, "application/pdf", "doc.pdf"
+            )
 
         assert result.conversion_performed is False
         assert result.preserved_mime == "application/pdf"
         assert result.preserved_data == pdf_data
+        assert result.preservation_format == "pdf+text"
+        # Empty PDF → empty string (no pages)
+        assert result.text_extract == ""
 
     @pytest.mark.asyncio
     async def test_pandoc_failure_raises_error(
@@ -307,7 +317,6 @@ class TestAlreadyArchival:
             "audio/flac",
             "audio/wav",
             "text/markdown",
-            "application/pdf",
             "text/csv",
             "application/json",
         ]
@@ -398,4 +407,111 @@ class TestPreservationMap:
         """Verify document MIME types map to pdf-a+md."""
         docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         assert PRESERVATION_MAP[docx] == "pdf-a+md"
-        assert PRESERVATION_MAP["application/pdf"] == "pdf"
+        assert PRESERVATION_MAP["application/pdf"] == "pdf+text"
+
+
+# -- PDF text extraction -----------------------------------------------------
+
+
+class TestPdfTextExtraction:
+    @pytest.mark.asyncio
+    async def test_pdf_text_extraction_with_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """PDF with text content extracts text correctly."""
+        pdf_data = b"%PDF-1.4 fake"
+        with patch("pdfplumber.open", create=True) as mock_open:
+            mock_page1 = type("MockPage", (), {"extract_text": lambda self: "Page one text"})()
+            mock_page2 = type("MockPage", (), {"extract_text": lambda self: "Page two text"})()
+            mock_pdf = mock_open.return_value.__enter__.return_value
+            mock_pdf.pages = [mock_page1, mock_page2]
+
+            result = await preservation_service.convert(
+                pdf_data, "application/pdf", "doc.pdf"
+            )
+
+        assert result.text_extract == "Page one text\n\nPage two text"
+        assert result.preserved_data == pdf_data
+        assert result.conversion_performed is False
+        assert result.preservation_format == "pdf+text"
+
+    @pytest.mark.asyncio
+    async def test_pdf_encrypted_returns_none_text(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """Encrypted/password-protected PDF returns None text_extract."""
+        pdf_data = b"%PDF-1.4 encrypted"
+        with patch("pdfplumber.open", create=True) as mock_open:
+            mock_open.side_effect = Exception("PDF is password-protected")
+
+            result = await preservation_service.convert(
+                pdf_data, "application/pdf", "secret.pdf"
+            )
+
+        assert result.text_extract is None
+        assert result.preserved_data == pdf_data
+        assert result.conversion_performed is False
+        assert result.preservation_format == "pdf+text"
+
+    @pytest.mark.asyncio
+    async def test_pdf_image_only_returns_empty_string(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """Scanned/image-only PDF returns empty string text_extract."""
+        pdf_data = b"%PDF-1.4 scanned"
+        with patch("pdfplumber.open", create=True) as mock_open:
+            # Image-only pages return None from extract_text()
+            mock_page = type("MockPage", (), {"extract_text": lambda self: None})()
+            mock_pdf = mock_open.return_value.__enter__.return_value
+            mock_pdf.pages = [mock_page]
+
+            result = await preservation_service.convert(
+                pdf_data, "application/pdf", "scanned.pdf"
+            )
+
+        assert result.text_extract == ""
+        assert result.preserved_data == pdf_data
+
+    def test_extract_pdf_text_direct(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """Direct unit test of _extract_pdf_text method."""
+        with patch("pdfplumber.open", create=True) as mock_open:
+            mock_page = type("MockPage", (), {"extract_text": lambda self: "hello world"})()
+            mock_pdf = mock_open.return_value.__enter__.return_value
+            mock_pdf.pages = [mock_page]
+
+            result = preservation_service._extract_pdf_text(b"fake pdf")
+
+        assert result == "hello world"
+
+    def test_extract_pdf_text_exception_returns_none(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """_extract_pdf_text returns None on exception."""
+        with patch("pdfplumber.open", create=True) as mock_open:
+            mock_open.side_effect = Exception("corrupt PDF")
+
+            result = preservation_service._extract_pdf_text(b"corrupt data")
+
+        assert result is None
+
+    def test_extract_pdf_text_respects_page_limit(
+        self, preservation_service: PreservationService
+    ) -> None:
+        """_extract_pdf_text only processes up to _PDF_MAX_PAGES pages."""
+        with patch("pdfplumber.open", create=True) as mock_open:
+            # Create more pages than the limit
+            num_pages = _PDF_MAX_PAGES + 50
+            mock_pages = [
+                type("MockPage", (), {"extract_text": lambda self: "text"})()
+                for _ in range(num_pages)
+            ]
+            mock_pdf = mock_open.return_value.__enter__.return_value
+            mock_pdf.pages = mock_pages
+
+            result = preservation_service._extract_pdf_text(b"fake pdf")
+
+        # Should only have _PDF_MAX_PAGES entries joined
+        assert result is not None
+        assert result.count("text") == _PDF_MAX_PAGES
