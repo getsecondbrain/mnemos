@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { Link } from "react-router-dom";
-import { listMemories, fetchVaultFile, getTimelineStats, deleteMemory, updateMemory } from "../services/api";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { listMemories, fetchVaultFile, getTimelineStats, deleteMemory, undeleteMemory, updateMemory } from "../services/api";
 import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
 import type { Memory, Tag, Person } from "../types";
 import QuickCapture from "./QuickCapture";
 import MemoryCardMenu from "./MemoryCardMenu";
-import ConfirmModal from "./ConfirmModal";
+import Toast from "./Toast";
 import OnThisDay from "./OnThisDay";
 import SuggestionCards from "./SuggestionCards";
 import { isFilterEmpty, CONTENT_TYPES } from "./FilterPanel";
@@ -281,8 +281,20 @@ export default function Timeline() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const [toast, setToast] = useState<{ memoryId: string; memory?: Memory } | null>(null);
+
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Pick up deletedMemoryId from MemoryDetail navigation state
+  useEffect(() => {
+    const state = location.state as { deletedMemoryId?: string } | null;
+    if (state?.deletedMemoryId) {
+      setToast({ memoryId: state.deletedMemoryId });
+      // Clear the state so a refresh doesn't re-trigger the toast
+      navigate(location.pathname + location.search, { replace: true, state: {} });
+    }
+  }, [location.state, location.pathname, location.search, navigate]);
 
   // All filter state from Layout's single useFilterSearchParams (via outlet context)
   const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation, tagData, personData } = useLayoutFilters();
@@ -480,23 +492,39 @@ export default function Timeline() {
     }
   }
 
-  function handleDeleteMemory(memoryId: string) {
-    setDeleteTarget(memoryId);
-  }
-
-  async function confirmDelete() {
-    if (!deleteTarget || deleting) return;
-    setDeleting(true);
+  async function handleDeleteMemory(memoryId: string) {
+    const removed = memories.find((m) => m.id === memoryId);
+    if (!removed) return;
     try {
-      await deleteMemory(deleteTarget);
-      setMemories((prev) => prev.filter((m) => m.id !== deleteTarget));
+      await deleteMemory(memoryId);
+      setMemories((prev) => prev.filter((m) => m.id !== memoryId));
       refreshStats();
-      setDeleteTarget(null);
+      setToast({ memoryId, memory: removed });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete memory.");
-      setDeleteTarget(null);
+    }
+  }
+
+  async function handleUndelete() {
+    if (!toast) return;
+    try {
+      await undeleteMemory(toast.memoryId);
+      if (toast.memory) {
+        // Re-insert the cached memory at its original position by captured_at
+        setMemories((prev) => {
+          const updated = [...prev, toast.memory!];
+          updated.sort((a, b) => new Date(b.captured_at).getTime() - new Date(a.captured_at).getTime());
+          return updated;
+        });
+      } else {
+        // Came from MemoryDetail — reload the full list
+        await loadInitial({ background: true });
+      }
+      refreshStats();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to undo delete.");
     } finally {
-      setDeleting(false);
+      setToast(null);
     }
   }
 
@@ -663,7 +691,7 @@ export default function Timeline() {
               className="block bg-gray-900 border border-gray-800 rounded-lg p-3 md:p-4 hover:border-gray-700 transition-colors"
             >
               <div className="flex gap-3 md:gap-4">
-                {memory.content_type === "photo" && memory.source_id && (
+                {memory.content_type === "photo" && memory.source_id && !memory.children?.length && (
                   <Thumbnail sourceId={memory.source_id} />
                 )}
                 <div className="flex-1 min-w-0">
@@ -696,6 +724,34 @@ export default function Timeline() {
                       ? `${memory.content.slice(0, 150)}...`
                       : memory.content}
                   </p>
+                  {/* Photo thumbnail strip for grouped memories */}
+                  {(() => {
+                    const photoKids = memory.children?.filter((c) => c.content_type === "photo") ?? [];
+                    if (photoKids.length === 0) return null;
+                    return (
+                      <div className="flex gap-2 mt-2">
+                        {photoKids.slice(0, 4).map((child, idx) => {
+                          const isLast = idx === 3 && photoKids.length > 4;
+                          return (
+                            <div key={child.id} className="relative">
+                              {child.source_id ? (
+                                <Thumbnail sourceId={child.source_id} />
+                              ) : (
+                                <div className="w-16 h-16 rounded bg-gray-800 shrink-0" />
+                              )}
+                              {isLast && (
+                                <div className="absolute inset-0 bg-black/60 rounded flex items-center justify-center">
+                                  <span className="text-white text-sm font-semibold">
+                                    +{photoKids.length - 4}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                   <div className="flex items-center gap-2 mt-2">
                     <p className="text-gray-500 text-xs">
                       {formatDate(memory.captured_at)}
@@ -757,16 +813,13 @@ export default function Timeline() {
         </div>
       )}
 
-      <ConfirmModal
-        open={deleteTarget !== null}
-        title="Delete Memory"
-        message="Are you sure you want to delete this memory? This cannot be undone."
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        loading={deleting}
-        onConfirm={confirmDelete}
-        onCancel={() => { setDeleteTarget(null); setDeleting(false); }}
-      />
+      {toast && (
+        <Toast
+          message="Memory deleted"
+          action={{ label: "Undo", onClick: handleUndelete }}
+          onDismiss={() => setToast(null)}
+        />
+      )}
     </div>
   );
 }

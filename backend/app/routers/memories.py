@@ -10,16 +10,14 @@ from sqlmodel import Session, func, or_, select
 
 from app.config import get_settings
 from app.db import get_session
-from app.dependencies import get_encryption_service, get_llm_service, get_vault_service, require_auth
-from app.models.memory import Memory, MemoryCreate, MemoryRead, MemoryTagInfo, MemoryUpdate
+from app.dependencies import get_encryption_service, get_llm_service, require_auth
+from app.models.memory import Memory, MemoryChildInfo, MemoryCreate, MemoryRead, MemoryTagInfo, MemoryUpdate
 from app.models.person import MemoryPerson
 from app.models.reflection import ReflectionPrompt
-from app.models.source import Source
 from app.models.tag import MemoryTag, Tag
 from app.services.encryption import EncryptedEnvelope, EncryptionService
 from app.services.git_ops import GitOpsService
 from app.services.llm import LLMError, LLMService
-from app.services.vault import VaultService
 
 from sqlalchemy.exc import IntegrityError
 
@@ -29,7 +27,7 @@ router = APIRouter(prefix="/api/memories", tags=["memories"])
 
 
 def _attach_tags(memories: list[Memory], session: Session) -> list[MemoryRead]:
-    """Convert Memory models to MemoryRead with tags populated."""
+    """Convert Memory models to MemoryRead with tags and children populated."""
     if not memories:
         return []
     memory_ids = [m.id for m in memories]
@@ -43,10 +41,22 @@ def _attach_tags(memories: list[Memory], session: Session) -> list[MemoryRead]:
         tags_by_memory.setdefault(mid, []).append(
             MemoryTagInfo(tag_id=tid, tag_name=tname, tag_color=tcolor)
         )
+    # Fetch children for these memories (exclude soft-deleted)
+    child_rows = session.exec(
+        select(Memory)
+        .where(Memory.parent_id.in_(memory_ids))  # type: ignore[union-attr]
+        .where(Memory.deleted_at == None)  # noqa: E711
+    ).all()
+    children_by_parent: dict[str, list[MemoryChildInfo]] = {}
+    for child in child_rows:
+        children_by_parent.setdefault(child.parent_id, []).append(  # type: ignore[arg-type]
+            MemoryChildInfo(id=child.id, source_id=child.source_id, content_type=child.content_type)
+        )
     result = []
     for m in memories:
         read = MemoryRead.model_validate(m)
         read.tags = tags_by_memory.get(m.id, [])
+        read.children = children_by_parent.get(m.id, [])
         result.append(read)
     return result
 
@@ -144,10 +154,10 @@ async def timeline_stats(
     # .scalars() which returns only the first column, dropping the count.
     sql = (
         "SELECT strftime('%Y', captured_at) AS year, COUNT(*) AS count "
-        "FROM memories"
+        "FROM memories WHERE parent_id IS NULL AND deleted_at IS NULL"
     )
     if visibility != "all":
-        sql += " WHERE visibility = :vis"
+        sql += " AND visibility = :vis"
     sql += " GROUP BY 1 ORDER BY 1"
 
     if visibility != "all":
@@ -184,7 +194,8 @@ async def on_this_day(
 
     sql = (
         "SELECT id FROM memories "
-        "WHERE strftime('%m', captured_at) = :month "
+        "WHERE parent_id IS NULL AND deleted_at IS NULL "
+        "AND strftime('%m', captured_at) = :month "
         "AND strftime('%d', captured_at) = :day "
         "AND strftime('%Y', captured_at) < :year"
     )
@@ -228,9 +239,9 @@ async def reflect_on_memory(
     """
     from datetime import timedelta
 
-    # 1. Check memory exists
+    # 1. Check memory exists and is not soft-deleted
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     # 2. Refuse to send decrypted content to a cloud fallback endpoint.
@@ -334,7 +345,7 @@ async def list_memories(
     session: Session = Depends(get_session),
 ) -> list[Memory]:
     order_col = Memory.captured_at if order_by == "captured_at" else Memory.created_at
-    statement = select(Memory).order_by(order_col.desc())  # type: ignore[union-attr]
+    statement = select(Memory).where(Memory.parent_id == None).where(Memory.deleted_at == None).order_by(order_col.desc())  # type: ignore[union-attr]  # noqa: E711
     if content_type:
         types = [t.strip() for t in content_type.split(",")]
         if len(types) == 1:
@@ -455,7 +466,7 @@ async def get_memory(
     session: Session = Depends(get_session),
 ) -> MemoryRead:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
     return _attach_tags([memory], session)[0]
 
@@ -468,7 +479,7 @@ async def update_memory(
     session: Session = Depends(get_session),
 ) -> Memory:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     update_data = body.model_dump(exclude_unset=True)
@@ -500,80 +511,72 @@ async def update_memory(
     return memory
 
 
-@router.delete("/{memory_id}", status_code=204)
+@router.delete("/{memory_id}", status_code=200)
 async def delete_memory(
-    request: Request,
     memory_id: str,
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
-    vault_service: VaultService = Depends(get_vault_service),
-) -> None:
+) -> dict:
+    """Soft-delete a memory (and descendants) by setting deleted_at."""
     memory = session.get(Memory, memory_id)
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
 
-    # Collect vault paths before cascade-deleting Source rows
-    sources = session.exec(
-        select(Source).where(Source.memory_id == memory_id)
-    ).all()
-    vault_paths: list[str] = []
-    for src in sources:
-        vault_paths.append(src.vault_path)
-        if src.preserved_vault_path:
-            vault_paths.append(src.preserved_vault_path)
+    now = datetime.now(timezone.utc)
 
-    # Git: remove memory file
-    try:
-        settings = get_settings()
-        git_svc = GitOpsService(settings.data_dir / "git")
-        git_svc.delete_memory_file(
-            memory.id,
-            message=f"Delete memory {memory.id}",
-        )
-    except Exception:
-        logger.warning("Git delete failed for memory %s", memory.id, exc_info=True)
+    # Collect all descendant memory IDs recursively
+    all_memories: list[Memory] = [memory]
+    visited: set[str] = {memory_id}
+    ids_to_check = [memory_id]
+    while ids_to_check:
+        children = list(session.exec(
+            select(Memory).where(Memory.parent_id.in_(ids_to_check))  # type: ignore[union-attr]
+        ).all())
+        ids_to_check = []
+        for child in children:
+            if child.id not in visited:
+                visited.add(child.id)
+                all_memories.append(child)
+                ids_to_check.append(child.id)
 
-    # Vault: delete .age files from disk (best-effort)
-    for vp in vault_paths:
-        try:
-            vault_service.delete_file(vp)
-        except Exception:
-            logger.warning(
-                "Vault file deletion failed for %s (memory %s)",
-                vp,
-                memory_id,
-                exc_info=True,
-            )
-
-    # Delete dependent rows to avoid FK constraint violations
-    from sqlalchemy import text as sa_text
-
-    for table in ("search_tokens", "memory_tags", "sources", "reflection_prompts", "suggestions", "memory_persons"):
-        session.execute(
-            sa_text(f"DELETE FROM {table} WHERE memory_id = :mid"),  # noqa: S608
-            {"mid": memory_id},
-        )
-    # Connections reference memory_id via source_memory_id / target_memory_id
-    session.execute(
-        sa_text(
-            "DELETE FROM connections "
-            "WHERE source_memory_id = :mid OR target_memory_id = :mid"
-        ),
-        {"mid": memory_id},
-    )
-    # Clear parent_id on children (self-referential FK)
-    session.execute(
-        sa_text("UPDATE memories SET parent_id = NULL WHERE parent_id = :mid"),
-        {"mid": memory_id},
-    )
-
-    # Clean up Qdrant vectors (best-effort)
-    try:
-        embedding_svc = getattr(request.app.state, "embedding_service", None)
-        if embedding_svc:
-            await embedding_svc.delete_memory_vectors(memory_id)
-    except Exception:
-        logger.warning("Vector cleanup failed for memory %s", memory_id, exc_info=True)
-
-    session.delete(memory)
+    for m in all_memories:
+        m.deleted_at = now
+        session.add(m)
     session.commit()
+
+    return {"id": memory_id}
+
+
+@router.post("/{memory_id}/undelete", response_model=MemoryRead)
+async def undelete_memory(
+    memory_id: str,
+    _session_id: str = Depends(require_auth),
+    session: Session = Depends(get_session),
+) -> MemoryRead:
+    """Restore a soft-deleted memory (and descendants)."""
+    memory = session.get(Memory, memory_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    # Collect all descendant memory IDs recursively
+    all_memories: list[Memory] = [memory]
+    visited: set[str] = {memory_id}
+    ids_to_check = [memory_id]
+    while ids_to_check:
+        children = list(session.exec(
+            select(Memory).where(Memory.parent_id.in_(ids_to_check))  # type: ignore[union-attr]
+        ).all())
+        ids_to_check = []
+        for child in children:
+            if child.id not in visited:
+                visited.add(child.id)
+                all_memories.append(child)
+                ids_to_check.append(child.id)
+
+    for m in all_memories:
+        m.deleted_at = None
+        session.add(m)
+    session.commit()
+    session.refresh(memory)
+
+    return _attach_tags([memory], session)[0]

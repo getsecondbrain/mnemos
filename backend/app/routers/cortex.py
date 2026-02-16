@@ -37,9 +37,9 @@ async def list_connections(
     connection_service: ConnectionService = Depends(get_connection_service),
 ) -> list[Connection]:
     """List all connections for a memory (where it is source or target)."""
-    # Verify memory exists
+    # Verify memory exists and is not soft-deleted
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     return connection_service.get_connections_for_memory(memory_id, session)
@@ -56,12 +56,12 @@ async def create_connection(
     session: Session = Depends(get_session),
 ) -> Connection:
     """Create a user-defined connection between two memories."""
-    # Verify both memories exist
+    # Verify both memories exist and are not soft-deleted
     source = session.get(Memory, body.source_memory_id)
-    if not source:
+    if not source or source.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Source memory not found")
     target = session.get(Memory, body.target_memory_id)
-    if not target:
+    if not target or target.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Target memory not found")
 
     # Validate relationship_type
@@ -119,9 +119,9 @@ async def trigger_analysis(
     Decrypts the memory content, finds similar memories via embedding search,
     and creates new AI-generated connections.
     """
-    # Verify memory exists and get content
+    # Verify memory exists, is not soft-deleted, and get content
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     # Decrypt memory content for analysis

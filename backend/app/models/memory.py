@@ -46,6 +46,9 @@ class Memory(SQLModel, table=True):
     # Version history
     git_commit: str | None = Field(default=None)  # Git commit SHA for this version
 
+    # Soft delete
+    deleted_at: datetime | None = Field(default=None)
+
     # Hierarchy
     parent_id: str | None = Field(default=None, foreign_key="memories.id")
     source_id: str | None = Field(default=None, foreign_key="sources.id")
@@ -120,6 +123,12 @@ class MemoryUpdate(BaseModel):
         return self
 
 
+class MemoryChildInfo(BaseModel):
+    id: str
+    source_id: str | None
+    content_type: str
+
+
 class MemoryTagInfo(BaseModel):
     tag_id: str
     tag_name: str
@@ -149,6 +158,8 @@ class MemoryRead(BaseModel):
     content_dek: str | None
     encryption_algo: str
     encryption_version: int
+    deleted_at: datetime | None = None
     tags: list[MemoryTagInfo] = []
+    children: list[MemoryChildInfo] = []
 
     model_config = {"from_attributes": True}

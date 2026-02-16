@@ -1,3 +1,10 @@
+/** Matches backend MemoryChildInfo schema */
+export interface MemoryChild {
+  id: string;
+  source_id: string | null;
+  content_type: string;
+}
+
 /** Matches backend MemoryRead schema */
 export interface Memory {
   id: string;
@@ -21,7 +28,9 @@ export interface Memory {
   content_dek: string | null;
   encryption_algo: string | null;
   encryption_version: number | null;
+  deleted_at: string | null;
   tags?: { tag_id: string; tag_name: string; tag_color: string | null }[];
+  children?: MemoryChild[];
 }
 
 /** Matches backend MemoryCreate schema */

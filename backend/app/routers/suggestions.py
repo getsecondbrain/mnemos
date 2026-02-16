@@ -27,10 +27,12 @@ async def list_suggestions(
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> list[SuggestionRead]:
-    """List pending suggestions, most recent first."""
+    """List pending suggestions, most recent first. Excludes suggestions for soft-deleted memories."""
     results = session.exec(
         select(Suggestion)
+        .join(Memory, Suggestion.memory_id == Memory.id)  # type: ignore[arg-type]
         .where(Suggestion.status == SuggestionStatus.PENDING.value)
+        .where(Memory.deleted_at == None)  # noqa: E711
         .order_by(Suggestion.created_at.desc())  # type: ignore[union-attr]
         .offset(skip)
         .limit(limit)
@@ -56,9 +58,9 @@ async def accept_suggestion(
     # Apply side effects based on suggestion type
     if suggestion.suggestion_type == SuggestionType.TAG_SUGGEST.value:
         try:
-            # Verify the referenced memory still exists
+            # Verify the referenced memory still exists and is not deleted
             memory = session.get(Memory, suggestion.memory_id)
-            if not memory:
+            if not memory or memory.deleted_at is not None:
                 raise HTTPException(
                     status_code=404,
                     detail="Referenced memory no longer exists",

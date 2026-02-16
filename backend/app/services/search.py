@@ -117,6 +117,12 @@ class SearchService:
         # --- Fuse results ---
         fused = self._fuse_scores(keyword_hits, vector_hits, query_token_count)
 
+        # --- Exclude soft-deleted memories ---
+        if fused:
+            deleted_ids = self._get_deleted_memory_ids(set(fused.keys()), session)
+            if deleted_ids:
+                fused = {mid: hit for mid, hit in fused.items() if mid not in deleted_ids}
+
         # Sort by fused score descending, take top_k
         sorted_hits = sorted(fused.values(), key=lambda h: h.score, reverse=True)
         top_hits = sorted_hits[:top_k]
@@ -319,6 +325,23 @@ class SearchService:
             )
 
         return fused
+
+    @staticmethod
+    def _get_deleted_memory_ids(
+        memory_ids: set[str], session: Session
+    ) -> set[str]:
+        """Return the subset of *memory_ids* that are soft-deleted."""
+        if not memory_ids:
+            return set()
+        placeholders = ", ".join(f":id_{i}" for i in range(len(memory_ids)))
+        params = {f"id_{i}": mid for i, mid in enumerate(memory_ids)}
+        rows = session.execute(
+            text(
+                f"SELECT id FROM memories WHERE id IN ({placeholders}) "  # noqa: S608
+                "AND deleted_at IS NOT NULL"
+            ).bindparams(**params)
+        ).all()
+        return {row[0] for row in rows}
 
     async def index_memory_tokens(
         self,

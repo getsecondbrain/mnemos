@@ -1,11 +1,10 @@
-import { Component, useState, useEffect, lazy, Suspense, type FormEvent, type ReactNode } from "react";
+import { Component, useState, useEffect, useCallback, lazy, Suspense, type FormEvent, type ReactNode } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag, fetchVaultFile, fetchPreservedVaultFile, fetchSourceMeta } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
 import MemoryCardMenu from "./MemoryCardMenu";
-import ConfirmModal from "./ConfirmModal";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
 import type { SourceMeta } from "../services/api";
 
@@ -74,6 +73,121 @@ function _mimeToExt(mime: string): string {
   return map[mime] ?? ".bin";
 }
 
+function ChildPhotoCarousel({ children }: { children: { id: string; source_id: string | null; content_type: string }[] }) {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [photoUrls, setPhotoUrls] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    const urls = new Map<string, string>();
+    let revoked = false;
+
+    for (const child of children) {
+      if (child.source_id) {
+        fetchVaultFile(child.source_id)
+          .then((blob) => {
+            if (revoked) return;
+            const url = URL.createObjectURL(blob);
+            urls.set(child.id, url);
+            setPhotoUrls(new Map(urls));
+          })
+          .catch(() => {});
+      }
+    }
+
+    return () => {
+      revoked = true;
+      for (const url of urls.values()) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [children]);
+
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") {
+        setCurrentIndex((prev) => (prev > 0 ? prev - 1 : children.length - 1));
+      } else if (e.key === "ArrowRight") {
+        setCurrentIndex((prev) => (prev < children.length - 1 ? prev + 1 : 0));
+      }
+    },
+    [children.length],
+  );
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
+
+  const currentChild = children[currentIndex];
+  const currentUrl = currentChild ? photoUrls.get(currentChild.id) : null;
+
+  return (
+    <div className="flex flex-col h-full bg-black rounded-lg">
+      {/* Main photo display */}
+      <div className="flex-1 flex items-center justify-center relative min-h-[300px]">
+        {/* Prev arrow */}
+        {children.length > 1 && (
+          <button
+            onClick={() => setCurrentIndex((prev) => (prev > 0 ? prev - 1 : children.length - 1))}
+            className="absolute left-2 z-10 w-10 h-10 flex items-center justify-center bg-black/50 hover:bg-black/70 text-white rounded-full transition-colors"
+            aria-label="Previous photo"
+          >
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+        )}
+
+        {currentUrl ? (
+          <img
+            src={currentUrl}
+            alt={`Photo ${currentIndex + 1} of ${children.length}`}
+            className="max-w-full max-h-[70vh] object-contain"
+          />
+        ) : (
+          <div className="w-full h-64 flex items-center justify-center">
+            <p className="text-gray-500">Loading photo...</p>
+          </div>
+        )}
+
+        {/* Next arrow */}
+        {children.length > 1 && (
+          <button
+            onClick={() => setCurrentIndex((prev) => (prev < children.length - 1 ? prev + 1 : 0))}
+            className="absolute right-2 z-10 w-10 h-10 flex items-center justify-center bg-black/50 hover:bg-black/70 text-white rounded-full transition-colors"
+            aria-label="Next photo"
+          >
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* Photo counter & thumbnail dots */}
+      {children.length > 1 && (
+        <div className="flex items-center justify-center gap-2 py-3">
+          <span className="text-gray-400 text-sm">
+            {currentIndex + 1} / {children.length}
+          </span>
+          <div className="flex gap-1.5 ml-2">
+            {children.map((child, idx) => (
+              <button
+                key={child.id}
+                onClick={() => setCurrentIndex(idx)}
+                className={`w-2 h-2 rounded-full transition-colors ${
+                  idx === currentIndex ? "bg-white" : "bg-gray-600 hover:bg-gray-400"
+                }`}
+                aria-label={`Go to photo ${idx + 1}`}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function MemoryDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -90,8 +204,6 @@ export default function MemoryDetail() {
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
   const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const [editingDate, setEditingDate] = useState(false);
   const [editCapturedAt, setEditCapturedAt] = useState("");
@@ -388,20 +500,13 @@ export default function MemoryDetail() {
     }
   }
 
-  function handleDelete() {
-    setShowDeleteConfirm(true);
-  }
-
-  async function confirmDelete() {
+  async function handleDelete() {
     if (!id) return;
-    setDeleting(true);
     try {
       await deleteMemory(id);
-      navigate("/timeline");
+      navigate("/timeline", { state: { deletedMemoryId: id } });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete memory.");
-      setDeleting(false);
-      setShowDeleteConfirm(false);
     }
   }
 
@@ -551,6 +656,204 @@ export default function MemoryDetail() {
     );
   }
 
+  const photoChildren = memory.children?.filter((c) => c.content_type === "photo") ?? [];
+  const hasPhotoChildren = photoChildren.length > 0;
+
+  // Shared content panel (used in both single-column and two-panel layouts)
+  const contentPanel = (
+    <>
+      <div className="flex items-start justify-between gap-3">
+        <h1 className="text-2xl font-bold text-gray-100">{displayTitle}</h1>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
+            {memory.content_type}
+          </span>
+          <MemoryCardMenu
+            memoryId={id!}
+            visibility={memory.visibility}
+            onDelete={handleDelete}
+            onVisibilityChange={handleVisibilityChange}
+            onEdit={startEditing}
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 mt-1">
+        {editingDate ? (
+          <>
+            <input
+              type="datetime-local"
+              value={editCapturedAt}
+              onChange={(e) => setEditCapturedAt(e.target.value)}
+              className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-gray-200 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+            />
+            <button
+              onClick={handleDateSave}
+              disabled={savingDate}
+              className="px-2 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs rounded transition-colors"
+            >
+              {savingDate ? "Saving..." : "Save"}
+            </button>
+            <button
+              onClick={() => setEditingDate(false)}
+              className="px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-gray-500 text-sm">
+              {formatDate(memory.captured_at)}
+            </p>
+            <button
+              onClick={startDateEditing}
+              className="text-gray-600 hover:text-gray-400 text-xs transition-colors"
+              title="Edit date"
+            >
+              Edit
+            </button>
+          </>
+        )}
+      </div>
+
+      <div className="mt-6 text-gray-200 whitespace-pre-wrap">
+        {displayContent}
+      </div>
+
+      {/* Location display (when memory has coordinates) */}
+      {memory.latitude != null && memory.longitude != null && (
+        <div className="mt-6">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Location</h2>
+          <Suspense fallback={<div className="rounded-lg border border-gray-700 bg-gray-800 flex items-center justify-center" style={{ height: 200 }}><p className="text-gray-500 text-sm">Loading map...</p></div>}>
+            <MemoryLocationMap latitude={memory.latitude} longitude={memory.longitude} />
+          </Suspense>
+          {decryptedPlaceName && (
+            <p className="text-sm text-gray-400 mt-1">{decryptedPlaceName}</p>
+          )}
+          <button
+            onClick={() => setShowLocationPicker(true)}
+            className="text-xs text-gray-500 hover:text-gray-300 mt-1 transition-colors"
+          >
+            Edit location
+          </button>
+        </div>
+      )}
+
+      {/* Add Location button (when memory lacks both coordinates) */}
+      {(memory.latitude == null || memory.longitude == null) && (
+        <div className="mt-6">
+          <button
+            onClick={() => setShowLocationPicker(true)}
+            className="text-sm text-gray-400 hover:text-gray-200 flex items-center gap-1 transition-colors"
+          >
+            + Add Location
+          </button>
+        </div>
+      )}
+
+      {/* Tags */}
+      <div className="mt-6">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Tags</h2>
+        <TagInput
+          selectedTags={memoryTags}
+          onAdd={handleTagAdd}
+          onRemove={handleTagRemove}
+          onCreateAndAdd={handleCreateAndAddTag}
+        />
+      </div>
+
+      {/* Connections */}
+      {connectionsLoading ? (
+        <div className="mt-8">
+          <h2 className="text-lg font-semibold text-gray-300 mb-3">Connections</h2>
+          <p className="text-gray-500 text-sm">Loading connections...</p>
+        </div>
+      ) : connections.length > 0 ? (
+        <div className="mt-8">
+          <h2 className="text-lg font-semibold text-gray-300 mb-3">
+            Connections ({connections.length})
+          </h2>
+          <div className="space-y-3">
+            {connections.map(({ connection, otherMemoryId, otherTitle, explanation }) => (
+              <div
+                key={connection.id}
+                className="bg-gray-800 border border-gray-700 rounded-lg p-4"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded bg-gray-700 text-gray-300">
+                    {connection.relationship_type}
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    {(connection.strength * 100).toFixed(0)}% match
+                  </span>
+                  {connection.is_primary && (
+                    <span className="text-xs text-blue-400">User-created</span>
+                  )}
+                </div>
+                <Link
+                  to={`/memory/${otherMemoryId}`}
+                  className="text-blue-400 hover:text-blue-300 text-sm font-medium underline"
+                >
+                  {otherTitle}
+                </Link>
+                <p className="text-sm text-gray-400 mt-2">{explanation}</p>
+                <p className="text-xs text-gray-600 mt-1">
+                  Generated by {connection.generated_by}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
+    </>
+  );
+
+  // Two-panel layout for memories with photo children
+  if (hasPhotoChildren) {
+    return (
+      <div className="max-w-6xl mx-auto">
+        <Link
+          to="/timeline"
+          className="text-blue-400 hover:text-blue-300 text-sm underline"
+        >
+          Back to Timeline
+        </Link>
+
+        <div className="mt-4 flex flex-col lg:flex-row gap-6">
+          {/* Left panel — Photo carousel (60%) */}
+          <div className="lg:w-[60%]">
+            <ChildPhotoCarousel children={photoChildren} />
+          </div>
+
+          {/* Right panel — Content (40%) */}
+          <div className="lg:w-[40%]">
+            {contentPanel}
+          </div>
+        </div>
+
+        {showLocationPicker && (
+          <ChunkErrorBoundary fallbackMessage="Failed to load location picker. Please reload the page.">
+            <Suspense fallback={null}>
+              <LocationPickerModal
+                open={showLocationPicker}
+                initialLat={memory.latitude}
+                initialLng={memory.longitude}
+                onSave={handleLocationSave}
+                onCancel={() => setShowLocationPicker(false)}
+                saving={savingLocation}
+              />
+            </Suspense>
+          </ChunkErrorBoundary>
+        )}
+
+      </div>
+    );
+  }
+
+  // Single-column layout for memories without photo children
   return (
     <div className="max-w-2xl mx-auto">
       <Link
@@ -561,65 +864,9 @@ export default function MemoryDetail() {
       </Link>
 
       <div className="mt-4">
-        <div className="flex items-start justify-between gap-3">
-          <h1 className="text-2xl font-bold text-gray-100">{displayTitle}</h1>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
-              {memory.content_type}
-            </span>
-            <MemoryCardMenu
-              memoryId={id!}
-              visibility={memory.visibility}
-              onDelete={handleDelete}
-              onVisibilityChange={handleVisibilityChange}
-              onEdit={startEditing}
-              deleting={deleting}
-            />
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 mt-1">
-          {editingDate ? (
-            <>
-              <input
-                type="datetime-local"
-                value={editCapturedAt}
-                onChange={(e) => setEditCapturedAt(e.target.value)}
-                className="px-2 py-1 bg-gray-800 border border-gray-600 rounded text-gray-200 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
-              />
-              <button
-                onClick={handleDateSave}
-                disabled={savingDate}
-                className="px-2 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs rounded transition-colors"
-              >
-                {savingDate ? "Saving..." : "Save"}
-              </button>
-              <button
-                onClick={() => setEditingDate(false)}
-                className="px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs rounded transition-colors"
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="text-gray-500 text-sm">
-                {formatDate(memory.captured_at)}
-              </p>
-              <button
-                onClick={startDateEditing}
-                className="text-gray-600 hover:text-gray-400 text-xs transition-colors"
-                title="Edit date"
-              >
-                Edit
-              </button>
-            </>
-          )}
-        </div>
-
         {/* Photo preview */}
         {memory.content_type === "photo" && imageUrl && (
-          <div className="mt-6">
+          <div className="mb-6">
             <img
               src={imageUrl}
               alt={displayTitle}
@@ -754,97 +1001,7 @@ export default function MemoryDetail() {
           </div>
         )}
 
-        {/* Location display (when memory has coordinates) */}
-        {memory.latitude != null && memory.longitude != null && (
-          <div className="mt-6">
-            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Location</h2>
-            <Suspense fallback={<div className="rounded-lg border border-gray-700 bg-gray-800 flex items-center justify-center" style={{ height: 200 }}><p className="text-gray-500 text-sm">Loading map...</p></div>}>
-              <MemoryLocationMap latitude={memory.latitude} longitude={memory.longitude} />
-            </Suspense>
-            {decryptedPlaceName && (
-              <p className="text-sm text-gray-400 mt-1">{decryptedPlaceName}</p>
-            )}
-            <button
-              onClick={() => setShowLocationPicker(true)}
-              className="text-xs text-gray-500 hover:text-gray-300 mt-1 transition-colors"
-            >
-              Edit location
-            </button>
-          </div>
-        )}
-
-        {/* Add Location button (when memory lacks both coordinates) */}
-        {(memory.latitude == null || memory.longitude == null) && (
-          <div className="mt-6">
-            <button
-              onClick={() => setShowLocationPicker(true)}
-              className="text-sm text-gray-400 hover:text-gray-200 flex items-center gap-1 transition-colors"
-            >
-              + Add Location
-            </button>
-          </div>
-        )}
-
-        <div className="mt-6 text-gray-200 whitespace-pre-wrap">
-          {displayContent}
-        </div>
-
-        {/* Tags */}
-        <div className="mt-6">
-          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Tags</h2>
-          <TagInput
-            selectedTags={memoryTags}
-            onAdd={handleTagAdd}
-            onRemove={handleTagRemove}
-            onCreateAndAdd={handleCreateAndAddTag}
-          />
-        </div>
-
-        {/* Connections */}
-        {connectionsLoading ? (
-          <div className="mt-8">
-            <h2 className="text-lg font-semibold text-gray-300 mb-3">Connections</h2>
-            <p className="text-gray-500 text-sm">Loading connections...</p>
-          </div>
-        ) : connections.length > 0 ? (
-          <div className="mt-8">
-            <h2 className="text-lg font-semibold text-gray-300 mb-3">
-              Connections ({connections.length})
-            </h2>
-            <div className="space-y-3">
-              {connections.map(({ connection, otherMemoryId, otherTitle, explanation }) => (
-                <div
-                  key={connection.id}
-                  className="bg-gray-800 border border-gray-700 rounded-lg p-4"
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded bg-gray-700 text-gray-300">
-                      {connection.relationship_type}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {(connection.strength * 100).toFixed(0)}% match
-                    </span>
-                    {connection.is_primary && (
-                      <span className="text-xs text-blue-400">User-created</span>
-                    )}
-                  </div>
-                  <Link
-                    to={`/memory/${otherMemoryId}`}
-                    className="text-blue-400 hover:text-blue-300 text-sm font-medium underline"
-                  >
-                    {otherTitle}
-                  </Link>
-                  <p className="text-sm text-gray-400 mt-2">{explanation}</p>
-                  <p className="text-xs text-gray-600 mt-1">
-                    Generated by {connection.generated_by}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
+        {contentPanel}
       </div>
 
       {showLocationPicker && (
@@ -862,16 +1019,6 @@ export default function MemoryDetail() {
         </ChunkErrorBoundary>
       )}
 
-      <ConfirmModal
-        open={showDeleteConfirm}
-        title="Delete Memory"
-        message="Are you sure you want to delete this memory? This cannot be undone."
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        loading={deleting}
-        onConfirm={confirmDelete}
-        onCancel={() => { setShowDeleteConfirm(false); setDeleting(false); }}
-      />
     </div>
   );
 }

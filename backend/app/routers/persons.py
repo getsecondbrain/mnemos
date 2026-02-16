@@ -132,7 +132,11 @@ async def get_person(
         raise HTTPException(status_code=404, detail="Person not found")
 
     memory_count = session.exec(
-        select(func.count()).where(MemoryPerson.person_id == person_id)
+        select(func.count())
+        .select_from(MemoryPerson)
+        .join(Memory, MemoryPerson.memory_id == Memory.id)  # type: ignore[arg-type]
+        .where(MemoryPerson.person_id == person_id)
+        .where(Memory.deleted_at == None)  # noqa: E711
     ).one()
 
     return PersonDetailRead(
@@ -237,7 +241,7 @@ async def link_person_to_memory(
     session: Session = Depends(get_session),
 ) -> MemoryPersonRead:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     person = session.get(Person, body.person_id)
@@ -312,7 +316,7 @@ async def unlink_person_from_memory(
     session: Session = Depends(get_session),
 ) -> None:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     assoc = session.exec(
@@ -337,7 +341,7 @@ async def list_memory_persons(
     session: Session = Depends(get_session),
 ) -> list[MemoryPersonRead]:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
     return _get_memory_persons(memory_id, session)
 

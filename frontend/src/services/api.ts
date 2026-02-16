@@ -214,9 +214,15 @@ export async function updateMemory(
   });
 }
 
-export async function deleteMemory(id: string): Promise<void> {
-  return request<void>(`/memories/${id}`, {
+export async function deleteMemory(id: string): Promise<{ id: string }> {
+  return request<{ id: string }>(`/memories/${id}`, {
     method: "DELETE",
+  });
+}
+
+export async function undeleteMemory(id: string): Promise<Memory> {
+  return request<Memory>(`/memories/${id}/undelete`, {
+    method: "POST",
   });
 }
 
@@ -245,6 +251,7 @@ export function uploadFileWithProgress(
   file: File,
   capturedAt?: string,
   onProgress?: (percent: number) => void,
+  parentId?: string,
 ): Promise<IngestResponse> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -284,6 +291,9 @@ export function uploadFileWithProgress(
     formData.append("file", file);
     if (capturedAt) {
       formData.append("captured_at", capturedAt);
+    }
+    if (parentId) {
+      formData.append("parent_id", parentId);
     }
 
     xhr.send(formData);

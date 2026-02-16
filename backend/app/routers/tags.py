@@ -149,7 +149,7 @@ async def add_tags_to_memory(
     session: Session = Depends(get_session),
 ) -> list[MemoryTagRead]:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     for tid in body.tag_ids:
@@ -183,7 +183,7 @@ async def remove_tag_from_memory(
     session: Session = Depends(get_session),
 ) -> None:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     assoc = session.exec(
@@ -215,7 +215,7 @@ async def list_memory_tags(
     session: Session = Depends(get_session),
 ) -> list[MemoryTagRead]:
     memory = session.get(Memory, memory_id)
-    if not memory:
+    if not memory or memory.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Memory not found")
     return _get_memory_tags(memory_id, session)
 

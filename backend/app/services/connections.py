@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from sqlmodel import Session, select, or_
 
 from app.models.connection import Connection, RELATIONSHIP_TYPES
+from app.models.memory import Memory
 from app.services.embedding import EmbeddingService, ScoredChunk
 from app.services.encryption import EncryptedEnvelope, EncryptionService
 from app.services.llm import LLMService, LLMError
@@ -131,14 +132,39 @@ class ConnectionService:
     def get_connections_for_memory(
         self, memory_id: str, session: Session
     ) -> list[Connection]:
-        """Return all connections where memory_id is source or target."""
-        statement = select(Connection).where(
-            or_(
-                Connection.source_memory_id == memory_id,
-                Connection.target_memory_id == memory_id,
+        """Return all connections where memory_id is source or target,
+        excluding connections whose *other* endpoint is soft-deleted."""
+        connections = list(session.exec(
+            select(Connection).where(
+                or_(
+                    Connection.source_memory_id == memory_id,
+                    Connection.target_memory_id == memory_id,
+                )
             )
-        )
-        return list(session.exec(statement).all())
+        ).all())
+
+        if not connections:
+            return connections
+
+        # Determine the "other" memory IDs and batch-check which are deleted
+        other_ids = {
+            c.target_memory_id if c.source_memory_id == memory_id else c.source_memory_id
+            for c in connections
+        }
+        deleted_ids: set[str] = set()
+        for mid in other_ids:
+            mem = session.get(Memory, mid)
+            if mem and mem.deleted_at is not None:
+                deleted_ids.add(mid)
+
+        if not deleted_ids:
+            return connections
+
+        return [
+            c for c in connections
+            if (c.target_memory_id if c.source_memory_id == memory_id else c.source_memory_id)
+            not in deleted_ids
+        ]
 
     def delete_connections_for_memory(
         self, memory_id: str, session: Session

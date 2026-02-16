@@ -47,6 +47,11 @@ def _run_migrations(eng) -> None:
                 text("ALTER TABLE memories ADD COLUMN visibility TEXT DEFAULT 'public'")
             )
 
+    # Soft delete (deleted_at)
+    if "deleted_at" not in columns:
+        with eng.begin() as conn:
+            conn.execute(text("ALTER TABLE memories ADD COLUMN deleted_at TEXT"))
+
     # Location fields (P12.1)
     for col_name, col_def in [
         ("latitude", "REAL"),
