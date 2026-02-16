@@ -7,8 +7,8 @@ function randomSmudge(): React.CSSProperties | null {
   const r = () => Math.random();
   return {
     position: "absolute",
-    top: `${-1 + r() * 20}px`,
-    left: `${r() * 62}px`,
+    top: `${-2 + r() * 24}px`,
+    left: `${r() * 75}px`,
     width: `${3 + r() * 6}px`,
     height: `${2 + r() * 5}px`,
     opacity: 0.06 + r() * 0.1,
@@ -36,7 +36,7 @@ export default function Logo() {
   return (
     <Link
       to="/timeline"
-      className="relative text-xl font-bold tracking-tight hover:text-gray-300 transition-colors inline-block select-none"
+      className="relative text-2xl font-bold tracking-tight hover:text-gray-300 transition-colors inline-block select-none"
     >
       Mnemos
       {smudge && <span style={smudge} />}
