@@ -23,21 +23,37 @@ class ErrorBoundary extends Component<Props, State> {
     console.error("ErrorBoundary caught an error:", error, errorInfo);
   }
 
+  isChunkLoadError(): boolean {
+    const msg = this.state.error?.message ?? "";
+    return (
+      msg.includes("Failed to fetch dynamically imported module") ||
+      msg.includes("Loading chunk") ||
+      msg.includes("Loading CSS chunk")
+    );
+  }
+
   handleReset = () => {
+    if (this.isChunkLoadError()) {
+      window.location.reload();
+      return;
+    }
     this.setState({ hasError: false, error: null });
   };
 
   render(): ReactNode {
     if (this.state.hasError) {
+      const isChunkError = this.isChunkLoadError();
       return (
         <div className="min-h-screen bg-gray-950 flex items-center justify-center">
           <div className="max-w-md text-center p-8">
             <h1 className="text-xl font-bold text-red-400 mb-4">
-              Something went wrong
+              {isChunkError ? "Failed to load page" : "Something went wrong"}
             </h1>
             {this.state.error && (
               <pre className="text-gray-400 text-sm mb-6 font-mono bg-gray-900 p-4 rounded overflow-auto max-h-40 text-left">
-                {this.state.error.message}
+                {isChunkError
+                  ? "A required file could not be loaded. This usually means your connection was interrupted or the app was updated."
+                  : this.state.error.message}
               </pre>
             )}
             <div className="flex gap-3 justify-center">

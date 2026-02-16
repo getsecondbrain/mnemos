@@ -6,6 +6,20 @@ import topLevelAwait from "vite-plugin-top-level-await";
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), wasm(), topLevelAwait()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/react-dom/") || id.includes("node_modules/react/") || id.includes("node_modules/react-router")) {
+            return "react-vendor";
+          }
+          if (id.includes("node_modules/argon2-browser/")) {
+            return "argon2";
+          }
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       "argon2-browser": "argon2-browser/dist/argon2-bundled.min.js",

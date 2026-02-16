@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from "react";
+import { Component, useState, useEffect, lazy, Suspense, type FormEvent, type ReactNode } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag, fetchVaultFile, fetchPreservedVaultFile, fetchSourceMeta } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
@@ -6,24 +6,37 @@ import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
 import MemoryCardMenu from "./MemoryCardMenu";
 import ConfirmModal from "./ConfirmModal";
-import LocationPickerModal from "./LocationPickerModal";
-import { MapContainer, TileLayer, Marker } from "react-leaflet";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
 import type { SourceMeta } from "../services/api";
 
-// Fix Leaflet default icon paths for bundled environments
-import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import markerShadow from "leaflet/dist/images/marker-shadow.png";
+const LocationPickerModal = lazy(() => import("./LocationPickerModal"));
+const MemoryLocationMap = lazy(() => import("./MemoryLocationMap"));
 
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: markerIcon2x,
-  iconUrl: markerIcon,
-  shadowUrl: markerShadow,
-});
+class ChunkErrorBoundary extends Component<
+  { fallbackMessage: string; children: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-lg border border-red-800 bg-gray-900 p-4 text-center">
+          <p className="text-red-400 text-sm">{this.props.fallbackMessage}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-2 text-xs text-gray-400 hover:text-gray-200 underline"
+          >
+            Reload page
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function hasTimezone(iso: string): boolean {
   return iso.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(iso);
@@ -745,21 +758,9 @@ export default function MemoryDetail() {
         {memory.latitude != null && memory.longitude != null && (
           <div className="mt-6">
             <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Location</h2>
-            <div className="rounded-lg overflow-hidden border border-gray-700" style={{ height: 200 }}>
-              <MapContainer
-                key={`${memory.latitude},${memory.longitude}`}
-                center={[memory.latitude, memory.longitude]}
-                zoom={13}
-                className="h-full w-full"
-                scrollWheelZoom={false}
-                dragging={false}
-                zoomControl={false}
-                attributionControl={false}
-              >
-                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                <Marker position={[memory.latitude, memory.longitude]} />
-              </MapContainer>
-            </div>
+            <Suspense fallback={<div className="rounded-lg border border-gray-700 bg-gray-800 flex items-center justify-center" style={{ height: 200 }}><p className="text-gray-500 text-sm">Loading map...</p></div>}>
+              <MemoryLocationMap latitude={memory.latitude} longitude={memory.longitude} />
+            </Suspense>
             {decryptedPlaceName && (
               <p className="text-sm text-gray-400 mt-1">{decryptedPlaceName}</p>
             )}
@@ -846,14 +847,20 @@ export default function MemoryDetail() {
         {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
       </div>
 
-      <LocationPickerModal
-        open={showLocationPicker}
-        initialLat={memory.latitude}
-        initialLng={memory.longitude}
-        onSave={handleLocationSave}
-        onCancel={() => setShowLocationPicker(false)}
-        saving={savingLocation}
-      />
+      {showLocationPicker && (
+        <ChunkErrorBoundary fallbackMessage="Failed to load location picker. Please reload the page.">
+          <Suspense fallback={null}>
+            <LocationPickerModal
+              open={showLocationPicker}
+              initialLat={memory.latitude}
+              initialLng={memory.longitude}
+              onSave={handleLocationSave}
+              onCancel={() => setShowLocationPicker(false)}
+              saving={savingLocation}
+            />
+          </Suspense>
+        </ChunkErrorBoundary>
+      )}
 
       <ConfirmModal
         open={showDeleteConfirm}

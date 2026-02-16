@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuthContext } from "./contexts/AuthContext";
 import Login from "./components/Login";
@@ -6,14 +7,31 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import Capture from "./components/Capture";
 import Timeline from "./components/Timeline";
 import MemoryDetail from "./components/MemoryDetail";
-import Chat from "./components/Chat";
 import Search from "./components/Search";
-import Graph from "./components/Graph";
-import Heartbeat from "./components/Heartbeat";
-import Testament from "./components/Testament";
-import Settings from "./components/Settings";
-import People from "./components/People";
-import MapView from "./components/MapView";
+
+function lazyWithRetry(
+  factory: () => Promise<{ default: React.ComponentType<unknown> }>,
+  retries = 2,
+): ReturnType<typeof lazy> {
+  return lazy(() => {
+    const attempt = (remaining: number): Promise<{ default: React.ComponentType<unknown> }> =>
+      factory().catch((err: unknown) => {
+        if (remaining <= 0) throw err;
+        return new Promise<{ default: React.ComponentType<unknown> }>((resolve) =>
+          setTimeout(() => resolve(attempt(remaining - 1)), 1000),
+        );
+      });
+    return attempt(retries);
+  });
+}
+
+const Chat = lazyWithRetry(() => import("./components/Chat"));
+const Graph = lazyWithRetry(() => import("./components/Graph"));
+const Heartbeat = lazyWithRetry(() => import("./components/Heartbeat"));
+const Testament = lazyWithRetry(() => import("./components/Testament"));
+const Settings = lazyWithRetry(() => import("./components/Settings"));
+const People = lazyWithRetry(() => import("./components/People"));
+const MapView = lazyWithRetry(() => import("./components/MapView"));
 
 function AppRoutes() {
   const auth = useAuthContext();
@@ -38,6 +56,11 @@ function AppRoutes() {
 
   return (
     <ErrorBoundary>
+      <Suspense fallback={
+        <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+          <p className="text-gray-400 text-lg">Loading...</p>
+        </div>
+      }>
       <Routes>
         <Route element={<Layout onLogout={auth.logout} />}>
           <Route index element={<Navigate to="/timeline" replace />} />
@@ -54,6 +77,7 @@ function AppRoutes() {
           <Route path="/settings" element={<Settings />} />
         </Route>
       </Routes>
+      </Suspense>
     </ErrorBoundary>
   );
 }
