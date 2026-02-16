@@ -20,6 +20,7 @@ export default function Chat() {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleReconnectRef = useRef<(closeCode?: number) => void>(() => {});
+  const hasParseErrorRef = useRef(false);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -51,8 +52,22 @@ export default function Chat() {
     };
 
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      switch (data.type) {
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        console.error("Failed to parse WebSocket message:", event.data);
+        setError("Failed to parse server message");
+        hasParseErrorRef.current = true;
+        return;
+      }
+      // Clear transient parse error only when one is active (avoid per-message state churn)
+      if (hasParseErrorRef.current) {
+        hasParseErrorRef.current = false;
+        setError(null);
+      }
+      const type = data.type as string | undefined;
+      switch (type) {
         case "token":
           setMessages((prev) => {
             const updated = [...prev];
@@ -60,7 +75,7 @@ export default function Chat() {
             if (last && last.role === "assistant") {
               updated[updated.length - 1] = {
                 ...last,
-                content: last.content + (data.text ?? ""),
+                content: last.content + (typeof data.text === "string" ? data.text : ""),
               };
             }
             return updated;
@@ -74,7 +89,7 @@ export default function Chat() {
             if (last && last.role === "assistant") {
               updated[updated.length - 1] = {
                 ...last,
-                sources: data.memory_ids ?? [],
+                sources: Array.isArray(data.memory_ids) ? data.memory_ids as string[] : [],
               };
             }
             return updated;
@@ -92,7 +107,7 @@ export default function Chat() {
           setIsStreaming(false);
           break;
         case "error":
-          setError(data.message ?? "An error occurred");
+          setError(typeof data.detail === "string" ? data.detail : "An error occurred");
           setIsStreaming(false);
           break;
       }
