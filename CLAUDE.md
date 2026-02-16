@@ -103,6 +103,28 @@ secondbrain/
 
 Each layer is independent. The Cortex can be wiped and rebuilt from the Vault.
 
+## Foundry (Autonomous Build Loop)
+
+Foundry is a Rust TUI that reads `IMPL_PLAN.md` and autonomously implements tasks using Claude Code agents. It lives at `/Users/name/homelab/context-foundry/`.
+
+```bash
+# Start the build loop for this project
+foundry --dir /Users/name/homelab/secondbrain
+
+# Headless mode (CI/logs only)
+foundry --dir /Users/name/homelab/secondbrain run --no-tui
+
+# Check progress
+foundry --dir /Users/name/homelab/secondbrain status
+
+# List all tasks
+foundry --dir /Users/name/homelab/secondbrain tasks
+```
+
+Foundry works through `- [ ]` tasks in `IMPL_PLAN.md` via: Planner → Builder → Validator → Fixer → Auditor → Git Commit. When all tasks are done, its discovery agent finds new work and keeps going.
+
+Config overrides go in `.foundry.json` at the project root.
+
 ## Build Loop Rules
 
 **DO NOT modify these files** — they are managed externally:
