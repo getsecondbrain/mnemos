@@ -9,11 +9,13 @@ from sqlmodel import Session, func, select
 
 from app.config import get_settings
 from app.db import get_session
-from app.dependencies import get_encryption_service, require_auth
+from app.dependencies import get_encryption_service, get_vault_service, require_auth
 from app.models.memory import Memory, MemoryCreate, MemoryRead, MemoryTagInfo, MemoryUpdate
+from app.models.source import Source
 from app.models.tag import MemoryTag, Tag
 from app.services.encryption import EncryptedEnvelope, EncryptionService
 from app.services.git_ops import GitOpsService
+from app.services.vault import VaultService
 
 logger = logging.getLogger(__name__)
 
@@ -253,10 +255,21 @@ async def delete_memory(
     memory_id: str,
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
+    vault_service: VaultService = Depends(get_vault_service),
 ) -> None:
     memory = session.get(Memory, memory_id)
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
+
+    # Collect vault paths before cascade-deleting Source rows
+    sources = session.exec(
+        select(Source).where(Source.memory_id == memory_id)
+    ).all()
+    vault_paths: list[str] = []
+    for src in sources:
+        vault_paths.append(src.vault_path)
+        if src.preserved_vault_path:
+            vault_paths.append(src.preserved_vault_path)
 
     # Git: remove memory file
     try:
@@ -268,6 +281,18 @@ async def delete_memory(
         )
     except Exception:
         logger.warning("Git delete failed for memory %s", memory.id, exc_info=True)
+
+    # Vault: delete .age files from disk (best-effort)
+    for vp in vault_paths:
+        try:
+            vault_service.delete_file(vp)
+        except Exception:
+            logger.warning(
+                "Vault file deletion failed for %s (memory %s)",
+                vp,
+                memory_id,
+                exc_info=True,
+            )
 
     # Delete dependent rows to avoid FK constraint violations
     from sqlalchemy import text as sa_text

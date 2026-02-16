@@ -258,3 +258,170 @@ class TestMemoryEdgeCases:
             assert resp.status_code == 201
             ids.add(resp.json()["id"])
         assert len(ids) == 5
+
+
+# ── Cascade Delete ────────────────────────────────────────────────────
+
+
+class TestDeleteMemoryCascade:
+    """Tests for cascade deletion of vault files on memory delete."""
+
+    def test_delete_memory_removes_vault_files(
+        self, session, vault_service, mock_embedding_service
+    ):
+        """DELETE /api/memories/{id} should delete vault .age files."""
+        from app.main import app as fastapi_app
+        from app.db import get_session
+        from app.dependencies import get_vault_service, require_auth
+        from app.models.memory import Memory
+        from app.models.source import Source
+        from fastapi.testclient import TestClient
+
+        # Create a memory with a source that has vault files
+        memory = Memory(title="Test", content="Body")
+        session.add(memory)
+        session.flush()
+
+        # Store two files in the vault
+        vault_path, _ = vault_service.store_file(b"original data", "2026", "02")
+        preserved_path, _ = vault_service.store_file(b"preserved data", "2026", "02")
+
+        source = Source(
+            memory_id=memory.id,
+            original_filename_encrypted="deadbeef",
+            vault_path=vault_path,
+            preserved_vault_path=preserved_path,
+            file_size=100,
+            original_size=50,
+            mime_type="application/pdf",
+            preservation_format="pdf",
+            content_type="document",
+            content_hash="abc123",
+        )
+        session.add(source)
+        session.commit()
+
+        # Verify files exist
+        assert vault_service.file_exists(vault_path) is True
+        assert vault_service.file_exists(preserved_path) is True
+
+        def _get_session_override():
+            yield session
+
+        def _vault_override():
+            return vault_service
+
+        fastapi_app.dependency_overrides[get_session] = _get_session_override
+        fastapi_app.dependency_overrides[get_vault_service] = _vault_override
+        fastapi_app.dependency_overrides[require_auth] = lambda: "test-session"
+
+        # Set mock embedding service on app state
+        fastapi_app.state.embedding_service = mock_embedding_service
+
+        try:
+            with TestClient(fastapi_app) as tc:
+                resp = tc.delete(f"/api/memories/{memory.id}")
+                assert resp.status_code == 204
+
+            # Verify vault files are gone
+            assert vault_service.file_exists(vault_path) is False
+            assert vault_service.file_exists(preserved_path) is False
+        finally:
+            fastapi_app.dependency_overrides.clear()
+            fastapi_app.state.embedding_service = None
+
+    def test_delete_memory_succeeds_when_vault_delete_fails(
+        self, session, mock_embedding_service
+    ):
+        """Memory deletion should succeed even if vault file deletion fails."""
+        from unittest.mock import MagicMock
+        from app.main import app as fastapi_app
+        from app.db import get_session
+        from app.dependencies import get_vault_service, require_auth
+        from app.models.memory import Memory
+        from app.models.source import Source
+        from app.services.vault import VaultService
+        from fastapi.testclient import TestClient
+
+        memory = Memory(title="Test", content="Body")
+        session.add(memory)
+        session.flush()
+        memory_id = memory.id
+
+        source = Source(
+            memory_id=memory_id,
+            original_filename_encrypted="deadbeef",
+            vault_path="2026/02/fake.age",
+            preserved_vault_path=None,
+            file_size=100,
+            original_size=50,
+            mime_type="text/plain",
+            preservation_format="txt",
+            content_type="text",
+            content_hash="abc123",
+        )
+        session.add(source)
+        session.commit()
+
+        # Mock vault service that raises on delete
+        mock_vault = MagicMock(spec=VaultService)
+        mock_vault.delete_file.side_effect = OSError("disk error")
+
+        def _get_session_override():
+            yield session
+
+        fastapi_app.dependency_overrides[get_session] = _get_session_override
+        fastapi_app.dependency_overrides[get_vault_service] = lambda: mock_vault
+        fastapi_app.dependency_overrides[require_auth] = lambda: "test-session"
+        fastapi_app.state.embedding_service = mock_embedding_service
+
+        try:
+            with TestClient(fastapi_app) as tc:
+                resp = tc.delete(f"/api/memories/{memory.id}")
+                # Should still succeed despite vault error
+                assert resp.status_code == 204
+
+            # Verify vault delete was attempted
+            mock_vault.delete_file.assert_called_once_with("2026/02/fake.age")
+
+            # Verify memory is actually gone from DB (use fresh query to bypass ORM cache)
+            session.expire_all()
+            assert session.get(Memory, memory_id) is None
+        finally:
+            fastapi_app.dependency_overrides.clear()
+            fastapi_app.state.embedding_service = None
+
+    def test_delete_memory_with_no_sources(
+        self, session, vault_service, mock_embedding_service
+    ):
+        """DELETE should work for memories that have no Source records."""
+        from app.main import app as fastapi_app
+        from app.db import get_session
+        from app.dependencies import get_vault_service, require_auth
+        from app.models.memory import Memory
+        from fastapi.testclient import TestClient
+
+        memory = Memory(title="No Source", content="text only")
+        session.add(memory)
+        session.commit()
+        memory_id = memory.id
+
+        def _get_session_override():
+            yield session
+
+        fastapi_app.dependency_overrides[get_session] = _get_session_override
+        fastapi_app.dependency_overrides[get_vault_service] = lambda: vault_service
+        fastapi_app.dependency_overrides[require_auth] = lambda: "test-session"
+        fastapi_app.state.embedding_service = mock_embedding_service
+
+        try:
+            with TestClient(fastapi_app) as tc:
+                resp = tc.delete(f"/api/memories/{memory.id}")
+                assert resp.status_code == 204
+
+            # Verify memory is gone (expire ORM cache to force fresh DB read)
+            session.expire_all()
+            assert session.get(Memory, memory_id) is None
+        finally:
+            fastapi_app.dependency_overrides.clear()
+            fastapi_app.state.embedding_service = None

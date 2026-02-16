@@ -218,7 +218,7 @@ def mock_embedding_service_fixture() -> MagicMock:
     mock = MagicMock(spec=EmbeddingService)
     mock.embed_memory = AsyncMock()
     mock.search_similar = AsyncMock(return_value=[])
-    mock.delete_memory_vectors = MagicMock()
+    mock.delete_memory_vectors = AsyncMock()
     return mock
 
 
