@@ -8,6 +8,7 @@ import type { Memory } from "../types";
 import QuickCapture from "./QuickCapture";
 import MemoryCardMenu from "./MemoryCardMenu";
 import ConfirmModal from "./ConfirmModal";
+import OnThisDay from "./OnThisDay";
 
 function Thumbnail({ sourceId }: { sourceId: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -442,6 +443,7 @@ export default function Timeline() {
   if (memories.length === 0 && !selectedYear && !selectedTagId) {
     return (
       <div className="py-6">
+        <OnThisDay onMemoryCreated={handleRefresh} />
         <QuickCapture onMemoryCreated={handleRefresh} />
         <p className="text-gray-500 text-center mt-4">
           No memories yet. Type something above or{" "}
@@ -501,6 +503,11 @@ export default function Timeline() {
           {showPrivate ? "Showing all" : "Show private"}
         </button>
       </div>
+
+      {/* On This Day carousel — only when no filters active */}
+      {!selectedYear && !selectedTagId && (
+        <OnThisDay onMemoryCreated={handleRefresh} />
+      )}
 
       {/* Timeline bar */}
       {timelineStats && timelineStats.years.length > 0 && (
