@@ -401,8 +401,6 @@ export default function Timeline() {
         </button>
       </div>
 
-      <QuickCapture onMemoryCreated={handleRefresh} />
-
       {/* Timeline bar */}
       {timelineStats && timelineStats.years.length > 0 && (
         <TimelineBar
@@ -411,6 +409,8 @@ export default function Timeline() {
           onSelectYear={handleSelectYear}
         />
       )}
+
+      <QuickCapture onMemoryCreated={handleRefresh} />
 
       {memories.length === 0 ? (
         <p className="text-gray-500 text-center py-8">

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import Logo from "./Logo";
 
 const navItems = [
   { to: "/capture", label: "Capture", icon: "+" },
@@ -24,7 +25,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
     <div className="flex flex-col md:flex-row h-screen">
       {/* Mobile top bar */}
       <div className="md:hidden flex items-center justify-between bg-gray-900 border-b border-gray-800 px-4 py-3">
-        <Link to="/timeline" className="text-xl font-bold tracking-tight hover:text-gray-300 transition-colors">Mnemos</Link>
+        <Logo />
         <button
           onClick={() => setMenuOpen(!menuOpen)}
           className="text-gray-400 hover:text-gray-200 p-1"
@@ -45,7 +46,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
       {/* Sidebar nav -- hidden on mobile unless menuOpen */}
       <nav className={`${menuOpen ? "flex" : "hidden"} md:flex w-full md:w-56 bg-gray-900 border-b md:border-b-0 md:border-r border-gray-800 flex-col`}>
         <div className="hidden md:block p-4 border-b border-gray-800">
-          <Link to="/timeline" className="text-xl font-bold tracking-tight hover:text-gray-300 transition-colors">Mnemos</Link>
+          <Logo />
         </div>
         <ul className="flex-1 py-2 space-y-1 overflow-y-auto">
           {navItems.map((item) => (
