@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     vault_integrity_sample_pct: float = 0.1  # Fraction of files to hash-verify (0.0-1.0)
     # OCR settings
     ocr_enabled: bool = True  # Set to False if tesseract is not installed
+    # Geocoding settings
+    geocoding_enabled: bool = True  # Reverse geocode GPS coords via Nominatim (1 req/sec)
     # Background AI loop intervals
     tag_suggest_interval_hours: int = 24
     enrich_interval_hours: int = 24

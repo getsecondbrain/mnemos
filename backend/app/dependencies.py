@@ -19,6 +19,7 @@ from app.services.search import SearchService
 from app.services.vault import VaultService
 from app.services.heartbeat import HeartbeatService
 from app.services.backup import BackupService
+from app.services.geocoding import GeocodingService
 from app.worker import BackgroundWorker
 
 _bearer_scheme = HTTPBearer(auto_error=True)
@@ -169,6 +170,17 @@ def get_backup_service(request: Request) -> BackupService:
         raise HTTPException(
             status_code=503,
             detail="Backup service unavailable",
+        )
+    return svc
+
+
+def get_geocoding_service(request: Request) -> GeocodingService:
+    """Inject the GeocodingService singleton from app state."""
+    svc = getattr(request.app.state, "geocoding_service", None)
+    if svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Geocoding service unavailable",
         )
     return svc
 

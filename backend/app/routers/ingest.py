@@ -18,10 +18,12 @@ from app.config import get_settings
 from app.db import get_session
 from app.dependencies import (
     get_encryption_service,
+    get_geocoding_service,
     get_ingestion_service,
     get_vault_service,
     require_auth,
 )
+from app.services.geocoding import GeocodingService
 from app.models.memory import Memory
 from app.models.source import Source
 from app.services.encryption import EncryptionService
@@ -74,6 +76,7 @@ async def ingest_file(
     enc: EncryptionService = Depends(get_encryption_service),
     ingestion: IngestionService = Depends(get_ingestion_service),
     vault_svc: VaultService = Depends(get_vault_service),
+    geocoding: GeocodingService = Depends(get_geocoding_service),
     session: Session = Depends(get_session),
 ) -> IngestResponse:
     """Ingest a file via multipart upload."""
@@ -135,6 +138,24 @@ async def ingest_file(
     )
     session.add(memory)
     session.flush()  # Get memory.id before creating Source
+
+    # Reverse geocode GPS coordinates to place name (best-effort)
+    if result.latitude is not None and result.longitude is not None:
+        try:
+            place = await geocoding.reverse_geocode_and_encrypt(
+                result.latitude, result.longitude, enc
+            )
+            if place is not None:
+                memory.place_name = place[0]
+                memory.place_name_dek = place[1]
+                session.add(memory)
+                session.flush()
+        except Exception:
+            logger.warning(
+                "Reverse geocoding failed for memory %s (lat=%s, lng=%s)",
+                memory.id, result.latitude, result.longitude,
+                exc_info=True,
+            )
 
     # Get encrypted file size on disk
     file_size = vault_svc.get_encrypted_size(result.original_vault_path)

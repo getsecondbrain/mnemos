@@ -97,6 +97,11 @@ async def lifespan(app: FastAPI):
     from app.services.backup import BackupService
     app.state.backup_service = BackupService(settings)
 
+    # Initialize GeocodingService singleton
+    from app.services.geocoding import GeocodingService
+    geocoding_service = GeocodingService(enabled=settings.geocoding_enabled)
+    app.state.geocoding_service = geocoding_service
+
     # Start periodic sweep of expired sessions (every 60s)
     async def _session_sweep_loop() -> None:
         while True:
@@ -197,6 +202,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown: wipe all in-memory master keys
     auth_state.wipe_all()
+
+    # Shutdown: close geocoding HTTP client
+    if hasattr(app.state, "geocoding_service"):
+        await app.state.geocoding_service.close()
 
 
 app = FastAPI(

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from math import cos, radians
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlmodel import Session, func, select
+from sqlmodel import Session, func, or_, select
 
 from app.config import get_settings
 from app.db import get_session
@@ -327,6 +328,7 @@ async def list_memories(
     visibility: Literal["public", "private", "all"] = Query("public", description="Filter: public, private, or all"),
     date_from: str | None = Query(None, description="ISO date lower bound (inclusive), e.g. 2024-01-01"),
     date_to: str | None = Query(None, description="ISO date upper bound (inclusive), e.g. 2024-12-31"),
+    near: str | None = Query(None, description="Filter by location: lat,lng,radius_km (e.g. '48.8566,2.3522,10')"),
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> list[Memory]:
@@ -384,6 +386,59 @@ async def list_memories(
             .having(func.count(func.distinct(MemoryPerson.person_id)) == len(person_ids))
         )
         statement = statement.where(Memory.id.in_(person_subq))  # type: ignore[arg-type]
+    if near is not None:
+        parts = near.split(",")
+        if len(parts) != 3:
+            raise HTTPException(422, "near must be lat,lng,radius_km (e.g. '48.8566,2.3522,10')")
+        try:
+            near_lat = float(parts[0])
+            near_lng = float(parts[1])
+            near_radius_km = float(parts[2])
+        except ValueError:
+            raise HTTPException(422, "near values must be numeric")
+        if not (-90 <= near_lat <= 90) or not (-180 <= near_lng <= 180):
+            raise HTTPException(422, "near lat/lng out of range")
+        if near_radius_km <= 0:
+            raise HTTPException(422, "near radius must be positive")
+
+        # Pre-filter: bounding box (cheap, narrows results before expensive trig)
+        # 1 degree latitude ~ 111 km
+        lat_delta = near_radius_km / 111.0
+        lng_delta = near_radius_km / (111.0 * max(cos(radians(near_lat)), 0.01))
+        statement = statement.where(Memory.latitude != None)  # noqa: E711
+        statement = statement.where(Memory.longitude != None)  # noqa: E711
+        statement = statement.where(Memory.latitude >= near_lat - lat_delta)
+        statement = statement.where(Memory.latitude <= near_lat + lat_delta)
+        lng_min = near_lng - lng_delta
+        lng_max = near_lng + lng_delta
+        if lng_min < -180 or lng_max > 180:
+            # Bounding box crosses the antimeridian — split into two ranges
+            statement = statement.where(
+                or_(
+                    Memory.longitude >= (lng_min + 360 if lng_min < -180 else lng_min),
+                    Memory.longitude <= (lng_max - 360 if lng_max > 180 else lng_max),
+                )
+            )
+        else:
+            statement = statement.where(Memory.longitude >= lng_min)
+            statement = statement.where(Memory.longitude <= lng_max)
+
+        # Precise Haversine filter via raw SQL
+        # Requires SQLite 3.35.0+ with math functions (default in Python 3.12+ / Debian 12)
+        from sqlalchemy import text as sa_text
+
+        haversine_sql = sa_text(
+            "acos(min(1.0, max(-1.0,"
+            "  sin(radians(:near_lat)) * sin(radians(latitude))"
+            "  + cos(radians(:near_lat)) * cos(radians(latitude))"
+            "    * cos(radians(longitude - :near_lng))"
+            "))) * 6371 < :radius_km"
+        ).bindparams(
+            near_lat=near_lat,
+            near_lng=near_lng,
+            radius_km=near_radius_km,
+        )
+        statement = statement.where(haversine_sql)
     statement = statement.offset(skip).limit(limit)
     memories = list(session.exec(statement).all())
     return _attach_tags(memories, session)
