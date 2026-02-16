@@ -3,12 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from typing import Literal
+
 from pydantic import BaseModel
+from sqlalchemy import CheckConstraint
 from sqlmodel import Field, SQLModel
+
+VisibilityType = Literal["public", "private"]
 
 
 class Memory(SQLModel, table=True):
     __tablename__ = "memories"
+    __table_args__ = (
+        CheckConstraint("visibility IN ('public', 'private')", name="ck_memories_visibility"),
+    )
 
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -20,6 +28,7 @@ class Memory(SQLModel, table=True):
     content: str  # Markdown body (or hex ciphertext)
     content_type: str = Field(default="text")  # "text", "photo", "voice", etc.
     source_type: str = Field(default="manual")  # "manual", "import", "email", etc.
+    visibility: str = Field(default="public")  # "public" or "private"
 
     # Metadata (plaintext JSON string for Phase 1; becomes encrypted bytes later)
     metadata_json: str | None = Field(default=None)
@@ -49,6 +58,7 @@ class MemoryCreate(BaseModel):
     content: str
     content_type: str = "text"
     source_type: str = "manual"
+    visibility: VisibilityType = "public"
     captured_at: datetime | None = None
     metadata_json: str | None = None
     parent_id: str | None = None
@@ -64,6 +74,7 @@ class MemoryUpdate(BaseModel):
     content: str | None = None
     content_type: str | None = None
     source_type: str | None = None
+    visibility: VisibilityType | None = None
     captured_at: datetime | None = None
     metadata_json: str | None = None
     parent_id: str | None = None
@@ -89,6 +100,7 @@ class MemoryRead(BaseModel):
     content: str
     content_type: str
     source_type: str
+    visibility: str
     metadata_json: str | None
     content_hash: str | None
     git_commit: str | None

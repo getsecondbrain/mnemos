@@ -41,6 +41,11 @@ def _run_migrations(eng) -> None:
             conn.execute(
                 text("ALTER TABLE memories ADD COLUMN source_id TEXT REFERENCES sources(id)")
             )
+    if "visibility" not in columns:
+        with eng.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE memories ADD COLUMN visibility TEXT DEFAULT 'public'")
+            )
 
 
 def get_session() -> Generator[Session, None, None]:

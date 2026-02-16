@@ -115,6 +115,85 @@ def test_delete_memory_not_found(client):
     assert response.status_code == 404
 
 
+# ── Visibility ────────────────────────────────────────────────────────
+
+
+def test_create_memory_default_visibility(client):
+    """POST /api/memories should default visibility to 'public'."""
+    resp = client.post("/api/memories", json={"title": "T", "content": "C"})
+    assert resp.status_code == 201
+    assert resp.json()["visibility"] == "public"
+
+
+def test_create_memory_with_visibility(client):
+    """POST /api/memories with explicit visibility='private'."""
+    resp = client.post("/api/memories", json={
+        "title": "Private", "content": "Secret", "visibility": "private"
+    })
+    assert resp.status_code == 201
+    assert resp.json()["visibility"] == "private"
+
+
+def test_list_memories_visibility_filter(client):
+    """GET /api/memories?visibility= filters correctly."""
+    client.post("/api/memories", json={"title": "Pub", "content": "C", "visibility": "public"})
+    client.post("/api/memories", json={"title": "Priv", "content": "C", "visibility": "private"})
+
+    # Default (public) should only return public
+    resp = client.get("/api/memories")
+    data = resp.json()
+    assert all(m["visibility"] == "public" for m in data)
+
+    # Explicit private
+    resp = client.get("/api/memories?visibility=private")
+    data = resp.json()
+    assert all(m["visibility"] == "private" for m in data)
+
+    # All
+    resp = client.get("/api/memories?visibility=all")
+    data = resp.json()
+    visibilities = {m["visibility"] for m in data}
+    assert "public" in visibilities
+    assert "private" in visibilities
+
+
+def test_update_memory_visibility(client):
+    """PUT /api/memories/{id} can change visibility."""
+    resp = client.post("/api/memories", json={"title": "T", "content": "C"})
+    memory_id = resp.json()["id"]
+    assert resp.json()["visibility"] == "public"
+
+    resp = client.put(f"/api/memories/{memory_id}", json={"visibility": "private"})
+    assert resp.status_code == 200
+    assert resp.json()["visibility"] == "private"
+
+    # Verify via GET
+    resp = client.get(f"/api/memories/{memory_id}")
+    assert resp.json()["visibility"] == "private"
+
+
+def test_create_memory_invalid_visibility(client):
+    """POST /api/memories with invalid visibility should return 422."""
+    resp = client.post("/api/memories", json={
+        "title": "Bad", "content": "C", "visibility": "banana"
+    })
+    assert resp.status_code == 422
+
+
+def test_update_memory_invalid_visibility(client):
+    """PUT /api/memories/{id} with invalid visibility should return 422."""
+    resp = client.post("/api/memories", json={"title": "T", "content": "C"})
+    memory_id = resp.json()["id"]
+    resp = client.put(f"/api/memories/{memory_id}", json={"visibility": "banana"})
+    assert resp.status_code == 422
+
+
+def test_list_memories_invalid_visibility_query(client):
+    """GET /api/memories?visibility=banana should return 422."""
+    resp = client.get("/api/memories?visibility=banana")
+    assert resp.status_code == 422
+
+
 # ── Edge Cases ────────────────────────────────────────────────────────
 
 

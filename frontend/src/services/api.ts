@@ -139,6 +139,7 @@ export async function listMemories(params?: {
   tag_ids?: string[];
   year?: number;
   order_by?: string;
+  visibility?: string;  // "public" | "private" | "all"
 }): Promise<Memory[]> {
   const query = new URLSearchParams();
   if (params?.skip != null) query.set("skip", String(params.skip));
@@ -151,6 +152,7 @@ export async function listMemories(params?: {
   }
   if (params?.year != null) query.set("year", String(params.year));
   if (params?.order_by) query.set("order_by", params.order_by);
+  if (params?.visibility) query.set("visibility", params.visibility);
   const qs = query.toString();
   return request<Memory[]>(`/memories${qs ? `?${qs}` : ""}`);
 }
@@ -167,8 +169,13 @@ export interface TimelineStats {
   latest_year: number | null;
 }
 
-export async function getTimelineStats(): Promise<TimelineStats> {
-  return request<TimelineStats>("/memories/stats/timeline");
+export async function getTimelineStats(params?: {
+  visibility?: string;  // "public" | "private" | "all"
+}): Promise<TimelineStats> {
+  const query = new URLSearchParams();
+  if (params?.visibility) query.set("visibility", params.visibility);
+  const qs = query.toString();
+  return request<TimelineStats>(`/memories/stats/timeline${qs ? `?${qs}` : ""}`);
 }
 
 export async function getMemory(id: string): Promise<Memory> {
@@ -286,7 +293,7 @@ export async function getConnections(memoryId: string): Promise<Connection[]> {
 }
 
 export async function getAllConnections(): Promise<Connection[]> {
-  const memories = await listMemories({ limit: 200 });
+  const memories = await listMemories({ limit: 200, visibility: "all" });
   const connectionSets = await Promise.all(
     memories.map((m) => getConnections(m.id).catch(() => [] as Connection[]))
   );

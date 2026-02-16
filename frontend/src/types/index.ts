@@ -8,6 +8,7 @@ export interface Memory {
   content: string;
   content_type: string;
   source_type: string;
+  visibility: string;
   metadata_json: string | null;
   content_hash: string | null;
   parent_id: string | null;
@@ -25,6 +26,7 @@ export interface MemoryCreate {
   content: string;
   content_type?: string;
   source_type?: string;
+  visibility?: string;
   captured_at?: string;
   metadata_json?: string;
   parent_id?: string;
@@ -41,6 +43,7 @@ export interface MemoryUpdate {
   content?: string;
   content_type?: string;
   source_type?: string;
+  visibility?: string;
   captured_at?: string;
   metadata_json?: string;
   parent_id?: string;

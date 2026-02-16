@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlmodel import Session, func, select
@@ -55,6 +56,7 @@ async def create_memory(
         content=body.content,
         content_type=body.content_type,
         source_type=body.source_type,
+        visibility=body.visibility,
         captured_at=body.captured_at or datetime.now(timezone.utc),
         metadata_json=body.metadata_json,
         parent_id=body.parent_id,
@@ -123,6 +125,7 @@ async def create_memory(
 
 @router.get("/stats/timeline")
 async def timeline_stats(
+    visibility: Literal["public", "private", "all"] = Query("public", description="Filter: public, private, or all"),
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -131,12 +134,18 @@ async def timeline_stats(
 
     # Must use session.execute() (not session.exec()) because exec() calls
     # .scalars() which returns only the first column, dropping the count.
-    rows = session.execute(
-        sa_text(
-            "SELECT strftime('%Y', captured_at) AS year, COUNT(*) AS count "
-            "FROM memories GROUP BY 1 ORDER BY 1"
-        )
-    ).all()
+    sql = (
+        "SELECT strftime('%Y', captured_at) AS year, COUNT(*) AS count "
+        "FROM memories"
+    )
+    if visibility != "all":
+        sql += " WHERE visibility = :vis"
+    sql += " GROUP BY 1 ORDER BY 1"
+
+    if visibility != "all":
+        rows = session.execute(sa_text(sql), {"vis": visibility}).all()
+    else:
+        rows = session.execute(sa_text(sql)).all()
 
     years = [{"year": int(r[0]), "count": r[1]} for r in rows if r[0]]  # type: ignore[index]
     total = sum(y["count"] for y in years)
@@ -159,6 +168,7 @@ async def list_memories(
     tag_ids: list[str] | None = Query(None, description="Filter by tag IDs (AND logic)"),
     year: int | None = Query(None, description="Filter by captured_at year"),
     order_by: str = Query("captured_at", description="Sort field: captured_at or created_at"),
+    visibility: Literal["public", "private", "all"] = Query("public", description="Filter: public, private, or all"),
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> list[Memory]:
@@ -170,6 +180,8 @@ async def list_memories(
         start_dt = datetime(year, 1, 1, tzinfo=timezone.utc)
         end_dt = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
         statement = statement.where(Memory.captured_at >= start_dt).where(Memory.captured_at <= end_dt)  # type: ignore[arg-type]
+    if visibility != "all":
+        statement = statement.where(Memory.visibility == visibility)
     if tag_ids:
         statement = (
             statement
