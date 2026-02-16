@@ -818,6 +818,42 @@ class TestCompoundFilters:
         assert at_midnight.id in ids
         assert afternoon.id not in ids
 
+    def test_list_memories_has_location_filter(self, client, session):
+        """GET /api/memories?has_location=true returns only memories with lat/lng."""
+        from app.models.memory import Memory
+
+        with_loc1 = Memory(
+            title="Paris", content="C",
+            latitude=48.8566, longitude=2.3522,
+        )
+        with_loc2 = Memory(
+            title="London", content="C",
+            latitude=51.5074, longitude=-0.1278,
+        )
+        without_loc = Memory(
+            title="No location", content="C",
+        )
+        session.add_all([with_loc1, with_loc2, without_loc])
+        session.commit()
+
+        # has_location=true should return only the two with coordinates
+        resp = client.get("/api/memories?has_location=true&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert with_loc1.id in ids
+        assert with_loc2.id in ids
+        assert without_loc.id not in ids
+
+        # Without the filter, all three should be returned
+        resp = client.get("/api/memories?visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert with_loc1.id in ids
+        assert with_loc2.id in ids
+        assert without_loc.id in ids
+
     def test_list_memories_content_type_single_still_works(self, client, session):
         """Single content_type (no comma) still works as before."""
         from app.models.memory import Memory

@@ -13,6 +13,7 @@ import Heartbeat from "./components/Heartbeat";
 import Testament from "./components/Testament";
 import Settings from "./components/Settings";
 import People from "./components/People";
+import MapView from "./components/MapView";
 
 function AppRoutes() {
   const auth = useAuthContext();
@@ -44,6 +45,7 @@ function AppRoutes() {
           <Route path="/timeline" element={<Timeline />} />
           <Route path="/memory/:id" element={<MemoryDetail />} />
           <Route path="/people" element={<People />} />
+          <Route path="/map" element={<MapView />} />
           <Route path="/search" element={<Search />} />
           <Route path="/chat" element={<Chat />} />
           <Route path="/graph" element={<Graph />} />

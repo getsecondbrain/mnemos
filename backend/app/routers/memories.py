@@ -329,6 +329,7 @@ async def list_memories(
     date_from: str | None = Query(None, description="ISO date lower bound (inclusive), e.g. 2024-01-01"),
     date_to: str | None = Query(None, description="ISO date upper bound (inclusive), e.g. 2024-12-31"),
     near: str | None = Query(None, description="Filter by location: lat,lng,radius_km (e.g. '48.8566,2.3522,10')"),
+    has_location: bool | None = Query(None, description="If true, only return memories with lat/lng set"),
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> list[Memory]:
@@ -439,6 +440,9 @@ async def list_memories(
             radius_km=near_radius_km,
         )
         statement = statement.where(haversine_sql)
+    if has_location is True:
+        statement = statement.where(Memory.latitude != None)  # noqa: E711
+        statement = statement.where(Memory.longitude != None)  # noqa: E711
     statement = statement.offset(skip).limit(limit)
     memories = list(session.exec(statement).all())
     return _attach_tags(memories, session)

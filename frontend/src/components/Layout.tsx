@@ -24,6 +24,7 @@ export function useLayoutFilters(): LayoutOutletContext {
 const navItems = [
   { to: "/capture", label: "Capture", icon: "+" },
   { to: "/people", label: "People", icon: "\u{1F464}" },
+  { to: "/map", label: "Map", icon: "\uD83D\uDDFA" },
   { to: "/search", label: "Search", icon: "\u2315" },
   { to: "/chat", label: "Chat", icon: "\uD83D\uDCAC" },
   { to: "/graph", label: "Graph", icon: "\u25C9" },
