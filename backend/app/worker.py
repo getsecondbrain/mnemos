@@ -908,7 +908,7 @@ class BackgroundWorker:
             logger.exception("Error recovering incomplete jobs")
 
     def _process_tag_suggest_loop(self, payload: dict) -> None:
-        """Handle TAG_SUGGEST loop job. (Logic added in P10.2)"""
+        """Handle TAG_SUGGEST loop job: suggest tags for untagged memories."""
         job_id = payload.pop("_job_id", None)
         attempt = payload.pop("_attempt", 1)
         max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
@@ -920,14 +920,256 @@ class BackgroundWorker:
             attempt=attempt, max_attempts=max_attempts, job_id=job_id,
         )
 
-        logger.info("TAG_SUGGEST loop job processed (no-op, logic in P10.2)")
+        # Check if this is a single-memory job (from ingest) or a loop job
+        single_memory_id = payload.get("memory_id")
+        session_id = payload.get("session_id")
 
-        self._persist_job(
-            job_type=JobType.TAG_SUGGEST.value,
-            payload=payload,
-            status=JobStatus.SUCCEEDED.value,
-            attempt=attempt, max_attempts=max_attempts,
-            completed_at=datetime.now(timezone.utc), job_id=job_id,
+        # Get master key — from session_id if provided, otherwise any active session
+        if session_id:
+            master_key = auth_state.get_master_key(session_id)
+        else:
+            master_key = auth_state.get_any_active_key()
+
+        if master_key is None:
+            logger.warning("No active session for TAG_SUGGEST — skipping this cycle")
+            self._persist_job(
+                job_type=JobType.TAG_SUGGEST.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+            return
+
+        encryption_service = EncryptionService(master_key)
+        loop = asyncio.new_event_loop()
+
+        try:
+            engine = self._get_engine()
+
+            if single_memory_id:
+                memory_ids = [single_memory_id]
+            else:
+                memory_ids = self._find_untagged_memory_ids(engine, limit=20)
+
+            if not memory_ids:
+                logger.info("TAG_SUGGEST: no untagged memories found")
+                self._persist_job(
+                    job_type=JobType.TAG_SUGGEST.value,
+                    payload=payload,
+                    status=JobStatus.SUCCEEDED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+                return
+
+            for mem_id in memory_ids:
+                try:
+                    self._suggest_tags_for_memory(
+                        loop, mem_id, encryption_service, engine
+                    )
+                except Exception:
+                    logger.warning(
+                        "TAG_SUGGEST failed for memory %s", mem_id, exc_info=True
+                    )
+
+            self._persist_job(
+                job_type=JobType.TAG_SUGGEST.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()
+            err_msg = str(exc)
+
+            logger.exception("Failed to process TAG_SUGGEST job")
+
+            if attempt >= max_attempts:
+                self._persist_job(
+                    job_type=JobType.TAG_SUGGEST.value,
+                    payload=payload,
+                    status=JobStatus.FAILED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+            else:
+                next_attempt = attempt + 1
+                delay = self._calculate_retry_delay(attempt)
+                retry_at = datetime.now(timezone.utc) + delay
+                self._persist_job(
+                    job_type=JobType.TAG_SUGGEST.value,
+                    payload=payload,
+                    status=JobStatus.PENDING.value,
+                    attempt=next_attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    next_retry_at=retry_at, job_id=job_id,
+                )
+                logger.info(
+                    "Scheduled TAG_SUGGEST retry %d/%d at %s",
+                    next_attempt, max_attempts, retry_at.isoformat(),
+                )
+        finally:
+            loop.close()
+
+    def _find_untagged_memory_ids(self, engine, limit: int = 20) -> list[str]:
+        """Find memory IDs that have zero tags."""
+        from app.models.memory import Memory
+        from app.models.tag import MemoryTag
+
+        with Session(engine) as session:
+            tagged_subq = select(MemoryTag.memory_id).distinct().subquery()
+            stmt = (
+                select(Memory.id)
+                .where(Memory.id.notin_(select(tagged_subq.c.memory_id)))
+                .order_by(Memory.created_at.desc())
+                .limit(limit)
+            )
+            results = session.exec(stmt).all()
+            return list(results)
+
+    def _suggest_tags_for_memory(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        memory_id: str,
+        encryption_service: EncryptionService,
+        engine,
+    ) -> None:
+        """Generate tag suggestions for a single memory and store as Suggestion records."""
+        from app.models.memory import Memory
+        from app.models.suggestion import Suggestion, SuggestionStatus, SuggestionType
+        from app.models.tag import MemoryTag, Tag
+        from app.services.encryption import EncryptedEnvelope
+
+        # 1. Load memory and snapshot attributes
+        with Session(engine) as session:
+            memory = session.get(Memory, memory_id)
+            if memory is None:
+                logger.warning("TAG_SUGGEST: memory %s not found", memory_id)
+                return
+            mem_title = memory.title
+            mem_content = memory.content
+            mem_title_dek = memory.title_dek
+            mem_content_dek = memory.content_dek
+
+        # 2. Decrypt title and content
+        try:
+            if mem_title_dek:
+                title_plain = encryption_service.decrypt(
+                    EncryptedEnvelope(
+                        ciphertext=bytes.fromhex(mem_title),
+                        encrypted_dek=bytes.fromhex(mem_title_dek),
+                        algo="aes-256-gcm", version=1,
+                    )
+                ).decode("utf-8")
+            else:
+                title_plain = mem_title or ""
+
+            if mem_content_dek:
+                content_plain = encryption_service.decrypt(
+                    EncryptedEnvelope(
+                        ciphertext=bytes.fromhex(mem_content),
+                        encrypted_dek=bytes.fromhex(mem_content_dek),
+                        algo="aes-256-gcm", version=1,
+                    )
+                ).decode("utf-8")
+            else:
+                content_plain = mem_content or ""
+        except Exception:
+            logger.warning(
+                "TAG_SUGGEST: decryption failed for memory %s",
+                memory_id, exc_info=True,
+            )
+            return
+
+        # 3. Collect existing tag names for this memory (for dedup)
+        existing_tag_names: set[str] = set()
+        with Session(engine) as session:
+            # Existing applied tags
+            stmt = (
+                select(Tag.name)
+                .join(MemoryTag, Tag.id == MemoryTag.tag_id)
+                .where(MemoryTag.memory_id == memory_id)
+            )
+            for name in session.exec(stmt).all():
+                existing_tag_names.add(name.lower() if isinstance(name, str) else name)
+
+            # Existing pending suggestions (decrypt to get tag name)
+            pending_suggestions = session.exec(
+                select(Suggestion)
+                .where(Suggestion.memory_id == memory_id)
+                .where(Suggestion.suggestion_type == SuggestionType.TAG_SUGGEST.value)
+                .where(Suggestion.status == SuggestionStatus.PENDING.value)
+            ).all()
+            for sug in pending_suggestions:
+                try:
+                    tag_name = encryption_service.decrypt(
+                        EncryptedEnvelope(
+                            ciphertext=bytes.fromhex(sug.content_encrypted),
+                            encrypted_dek=bytes.fromhex(sug.content_dek),
+                            algo=sug.encryption_algo, version=sug.encryption_version,
+                        )
+                    ).decode("utf-8")
+                    existing_tag_names.add(tag_name.lower())
+                except Exception:
+                    pass  # Skip suggestions we can't decrypt
+
+        # 4. Call LLM for suggestions
+        content_preview = content_plain[:500]
+        prompt = (
+            "Given this memory, suggest 1-3 short tags (single words or two-word "
+            "phrases) that categorize it. Return only the tag names, one per line.\n\n"
+            f"Title: {title_plain}\n"
+            f"Content: {content_preview}"
+        )
+
+        response = loop.run_until_complete(
+            self._llm_service.generate(
+                prompt=prompt,
+                system="You are a tagging assistant. Return only tag names, one per line. "
+                       "No numbers, bullets, or explanation.",
+                temperature=0.3,
+            )
+        )
+
+        # 5. Parse response
+        raw_tags = response.text.strip().split("\n")
+        parsed_tags: list[str] = []
+        for raw in raw_tags:
+            cleaned = re.sub(r"^[\d.\-*)\s]+", "", raw).strip().lower()
+            cleaned = re.sub(r"[^\w\s-]", "", cleaned).strip()
+            if 2 <= len(cleaned) <= 30:
+                parsed_tags.append(cleaned)
+        parsed_tags = parsed_tags[:3]  # Cap at 3
+
+        # 6. Deduplicate
+        new_tags = [t for t in parsed_tags if t.lower() not in existing_tag_names]
+
+        if not new_tags:
+            logger.debug("TAG_SUGGEST: no new tags for memory %s", memory_id)
+            return
+
+        # 7. Create Suggestion records
+        with Session(engine) as session:
+            for tag_name in new_tags:
+                envelope = encryption_service.encrypt(tag_name.encode("utf-8"))
+                suggestion = Suggestion(
+                    memory_id=memory_id,
+                    suggestion_type=SuggestionType.TAG_SUGGEST.value,
+                    content_encrypted=envelope.ciphertext.hex(),
+                    content_dek=envelope.encrypted_dek.hex(),
+                    encryption_algo=envelope.algo,
+                    encryption_version=envelope.version,
+                    status=SuggestionStatus.PENDING.value,
+                )
+                session.add(suggestion)
+            session.commit()
+
+        logger.info(
+            "TAG_SUGGEST: created %d suggestions for memory %s",
+            len(new_tags), memory_id,
         )
 
     def _process_enrich_prompt_loop(self, payload: dict) -> None:

@@ -75,6 +75,25 @@ def get_master_key(session_id: str) -> bytearray | None:
         return bytearray(entry.key)
 
 
+def get_any_active_key() -> bytearray | None:
+    """Return a master key from any active session, or None if vault is locked.
+
+    Used by background loops that need encryption but don't have a specific
+    session context (e.g., scheduled tag suggestion loop).
+    """
+    with _lock:
+        now = datetime.now(timezone.utc)
+        for sid, entry in _active_sessions.items():
+            if _timeout_minutes is not None:
+                elapsed = now - entry.last_activity
+                if elapsed.total_seconds() > _timeout_minutes * 60:
+                    continue  # Skip expired (sweep will clean up)
+            # Refresh sliding window
+            entry.last_activity = datetime.now(timezone.utc)
+            return bytearray(entry.key)
+        return None
+
+
 def sweep_expired() -> int:
     """Proactively wipe all expired sessions. Returns count of wiped sessions.
 

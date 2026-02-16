@@ -1,72 +1,86 @@
-# Audit Report — P10.1
+# Audit Report — P10.2
 
 ```json
 {
-  "high": [],
-  "medium": [
+  "high": [
     {
-      "file": "backend/app/models/suggestion.py",
-      "line": 39,
-      "issue": "Suggestion.memory_id is NOT nullable, but suggestion_type 'digest' and 'pattern' (per P10.3/P10.5) may need to represent suggestions that span multiple memories or are global (e.g., a weekly digest). When P10.3 tries to create a digest Suggestion without a single owning memory, it will hit a NOT NULL constraint violation. Consider making memory_id nullable or documenting that digest/pattern suggestions must be associated with a specific memory.",
-      "category": "logic"
-    },
-    {
-      "file": "backend/app/services/loop_scheduler.py",
-      "line": 63,
-      "issue": "mark_started() silently returns without logging an error or raising when the LoopState row is not found (state is None at line 75). If the loop_state row was deleted externally (e.g., manual DB edit) between check_due() and mark_started(), the next_run_at is never updated and check_due() will return this loop_name every cycle, causing unbounded job submissions every 5 minutes.",
-      "category": "logic"
-    },
-    {
-      "file": "backend/app/main.py",
-      "line": 148,
-      "issue": "If a single loop_name fails in the for-loop (e.g., mark_started throws an unexpected DB error), the remaining due loops in that cycle are skipped. The outer try/except at line 162 catches it, but the loops that were due but not yet processed won't be retried until the next 300s cycle. This is acceptable for 6-168 hour intervals but could cause up to 5 minutes of scheduling drift.",
-      "category": "error-handling"
+      "file": "backend/app/worker.py",
+      "line": 1170,
+      "issue": "Decrypted tag names are logged in plaintext via logger.info('TAG_SUGGEST: created %d suggestions for memory %s'). While the current code at line 1170-1172 only logs memory_id and count (not the tag names), the plan's reference implementation at line 441 in current-plan.md shows ', '.join(new_tags) being logged. The actual implementation correctly omits them — VERIFIED as safe. However, the tag names DO remain in local variables (new_tags) in the worker thread memory. This is consistent with how _auto_suggest_tags works (line 532 logs tag names). Not blocking since existing code already logs plaintext tag names.",
+      "category": "security"
     },
     {
       "file": "backend/app/worker.py",
-      "line": 910,
-      "issue": "Stub handlers (_process_tag_suggest_loop, _process_enrich_prompt_loop, _process_connection_rescan, _process_digest) have no try/except around _persist_job calls. If the DB is temporarily locked or the first _persist_job succeeds but the second fails, the job gets stuck in PROCESSING state permanently (until recover_incomplete_jobs on next restart). Existing non-stub handlers (e.g., _process_heartbeat_check) have full try/except with retry logic.",
+      "line": 1022,
+      "issue": "_find_untagged_memory_ids uses a double-nested subquery pattern: select(Memory.id).where(Memory.id.notin_(select(tagged_subq.c.memory_id))) where tagged_subq is already a subquery. The notin_ wraps a SELECT over a subquery's column, creating SELECT ... WHERE id NOT IN (SELECT memory_id FROM (SELECT DISTINCT memory_id FROM memory_tags)). While functionally correct, this may produce unexpected results with NULL values in NOT IN subqueries if memory_id can be NULL in MemoryTag. Checking the model: MemoryTag.memory_id is a primary key (line 15 of tag.py), so it cannot be NULL — this is safe. However, the double-nesting is unnecessary and could be simplified to a single NOT EXISTS or NOT IN without the intermediate subquery. Not a correctness bug.",
+      "category": "logic"
+    }
+  ],
+  "medium": [
+    {
+      "file": "backend/app/routers/ingest.py",
+      "line": 209,
+      "issue": "TAG_SUGGEST job is submitted immediately after the INGEST job on ingest. Both jobs are queued in order, but since the worker processes them sequentially from the same queue, the TAG_SUGGEST job will run AFTER the INGEST job completes (which includes _auto_suggest_tags). If the INGEST job auto-applies tags successfully, the TAG_SUGGEST job will then find existing tags and produce fewer/no duplicate suggestions — which is correct. However, if the INGEST job FAILS and gets scheduled for retry, the TAG_SUGGEST job runs first on a memory that may not yet have embeddings/search tokens. The TAG_SUGGEST job itself doesn't depend on embeddings, so it will still work, but this ordering could cause the TAG_SUGGEST to generate suggestions for tags that _auto_suggest_tags would have auto-applied had it succeeded. Result: user sees suggestion prompts for tags that would have been auto-applied. Low practical impact since the user can accept them, but it's a race-like ordering issue.",
+      "category": "logic"
+    },
+    {
+      "file": "backend/app/worker.py",
+      "line": 1096,
+      "issue": "When querying existing tag names with session.exec(stmt).all(), SQLModel returns results from select(Tag.name) which could be Row objects or plain strings depending on SQLModel version. Line 1097 checks isinstance(name, str) as a guard, but if the result is a Row tuple like (name,), the .lower() call would fail silently because isinstance check would fall through and add the Row object itself to the set, breaking deduplication. The plan's code at line 364 shows 'for (name,) in session.exec(stmt).all()' with tuple unpacking. The actual code at line 1096 uses 'for name in ...' without unpacking. With SQLModel's exec() on a select(Tag.name), this typically returns scalar strings, not tuples, so this is likely correct — but the isinstance guard suggests uncertainty about the return type.",
+      "category": "logic"
+    },
+    {
+      "file": "backend/app/worker.py",
+      "line": 1141,
+      "issue": "The regex r'^[\\d.\\-*)\\s]+' used to strip leading bullets/numbers/dashes from LLM output also strips leading digits from legitimate tag names. For example, a tag like '3d-printing' would have its leading '3' stripped, becoming 'd-printing'. The regex is greedy and matches any leading digits, periods, dashes, asterisks, closing parens, or whitespace. This is a known tradeoff for LLM output parsing but could corrupt valid multi-word tags that start with numbers.",
+      "category": "logic"
+    },
+    {
+      "file": "backend/app/auth_state.py",
+      "line": 86,
+      "issue": "get_any_active_key() iterates _active_sessions and skips expired entries but does NOT clean them up (it relies on sweep to do so). If all sessions are expired except the sweep hasn't run yet, the function correctly returns None. However, the iteration order of dict in Python 3.7+ is insertion order, so it will always try the oldest session first. If the oldest session is expired, it skips to the next. This is correct behavior but means the function always refreshes the first non-expired session's sliding window timer, potentially keeping a session alive that would otherwise expire. This is by design per the plan but worth noting.",
+      "category": "logic"
+    },
+    {
+      "file": "backend/app/worker.py",
+      "line": 966,
+      "issue": "In loop mode (no single_memory_id), if _suggest_tags_for_memory raises for some memories but succeeds for others, the overall job is still marked SUCCEEDED (line 976-982). Individual failures are logged but swallowed. This means the job won't retry for the failed memories. The only way those memories get suggestions is on the next daily cycle when _find_untagged_memory_ids picks them up again (if they still have zero tags). This is acceptable behavior per the plan but means transient LLM failures for specific memories are silently deferred 24 hours.",
       "category": "error-handling"
     }
   ],
   "low": [
     {
       "file": "backend/app/worker.py",
-      "line": 934,
-      "issue": "Docstring says 'Logic added in P10.2' but per IMPL_PLAN.md, ENRICH_PROMPT logic is added in P10.3, not P10.2. Same issue on line 957 (_process_connection_rescan says P10.3 — correct) and line 979 (_process_digest says P10.3 — correct).",
+      "line": 1188,
+      "issue": "_process_enrich_prompt_loop log message says 'logic in P10.2' but ENRICH_PROMPT logic is specified for a later phase. The comment is misleading — should say 'no-op placeholder' or reference the correct future task.",
       "category": "inconsistency"
     },
     {
-      "file": "backend/app/models/suggestion.py",
-      "line": 43,
-      "issue": "Plan's 'Key decisions' section said 'No encryption_algo/encryption_version on Suggestion', but the implementation correctly added them (lines 43-44). This is better than the plan — follows the project's crypto-agility convention. Not a bug, just a plan/implementation divergence worth noting.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "backend/app/models/suggestion.py",
-      "line": 47,
-      "issue": "updated_at default_factory creates the timestamp at row creation but is never automatically updated on subsequent modifications. When P10.4 implements accept/dismiss endpoints, they must explicitly set updated_at = datetime.now(timezone.utc) or the field will show creation time, not last-modified time. This is consistent with the Memory model's pattern but worth noting for future implementers.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "backend/app/services/loop_scheduler.py",
-      "line": 26,
-      "issue": "The engine parameter has no type annotation (should be sqlalchemy.engine.Engine). Minor type safety gap — all other typed params in the codebase use type hints per CLAUDE.md conventions.",
+      "file": "backend/app/worker.py",
+      "line": 1148,
+      "issue": "Redundant .lower() call on line 1148: 'new_tags = [t for t in parsed_tags if t.lower() not in existing_tag_names]'. The parsed_tags are already lowercased on line 1141 (via .strip().lower()), so t.lower() is a no-op. Not a bug, just unnecessary.",
       "category": "style"
+    },
+    {
+      "file": "backend/app/main.py",
+      "line": 150,
+      "issue": "The loop scheduler submits TAG_SUGGEST jobs with empty payload (Job(job_type=job_type, payload={})). The _process_tag_suggest_loop handler correctly treats missing 'memory_id' as loop mode (line 924: single_memory_id = payload.get('memory_id') returns None). This is correct behavior.",
+      "category": "inconsistency"
     }
   ],
   "validated": [
-    "LoopScheduler._intervals keys exactly match JobType enum values (tag_suggest, enrich_prompt, connection_rescan, digest) — the JobType(loop_name) cast in main.py line 150 will always succeed for known loops",
-    "LoopState and Suggestion models are correctly imported in models/__init__.py, ensuring SQLModel.metadata.create_all() creates both tables",
-    "Config settings (tag_suggest_interval_hours, enrich_interval_hours, connection_rescan_interval_hours, digest_interval_hours) added with correct defaults matching IMPL_PLAN.md spec",
-    "Scheduler async task in main.py has proper 120s initial delay, proper cancellation on shutdown, and correct exception handling that prevents the loop from dying on transient errors",
-    "Memory deletion in routers/memories.py correctly cascades to 'suggestions' table (line 482), preventing orphaned Suggestion rows when a memory is deleted",
-    "LoopScheduler uses short-lived Session objects (one per call), no long-lived DB sessions that could cause SQLite locking issues",
-    "Worker stub handlers follow the same payload.pop('_job_id') pattern as existing handlers, ensuring retry metadata is correctly extracted",
-    "Suggestion model has CheckConstraints matching the enum values for both suggestion_type and status, preventing invalid data at the DB level",
-    "Suggestion model FK on memory_id is indexed (index=True), which is correct for the join patterns P10.4 will use",
-    "LoopScheduler.initialize() is idempotent — it only inserts rows that don't already exist, so repeated startups don't reset next_run_at",
-    "The scheduler check interval (300s) is appropriate for loop intervals ranging from 6 to 168 hours — maximum scheduling drift is ~5 minutes which is negligible"
+    "JobType.TAG_SUGGEST enum value ('tag_suggest') correctly matches LoopScheduler loop_name, enabling JobType(loop_name) construction in main.py line 150",
+    "get_any_active_key() correctly acquires _lock, checks timeout, refreshes sliding window, and returns a copy of the key — consistent with get_master_key() pattern",
+    "Envelope encryption in _suggest_tags_for_memory correctly uses EncryptedEnvelope with bytes.fromhex() for both ciphertext and encrypted_dek, matching how data is stored (hex-encoded) in the Memory model",
+    "Suggestion model fields (content_encrypted, content_dek, encryption_algo, encryption_version, status, suggestion_type) all match what _suggest_tags_for_memory writes",
+    "Deduplication correctly checks both existing applied tags (via Tag+MemoryTag join) and existing pending suggestions (via Suggestion query with type+status filter and decryption)",
+    "TAG_SUGGEST job on ingest is submitted AFTER session.commit() — the memory row exists in DB before the worker tries to read it, avoiding FK/not-found races",
+    "Memory attribute snapshotting (lines 1052-1055) correctly captures title, content, title_dek, content_dek before leaving the session scope, preventing DetachedInstanceError",
+    "The worker's event loop lifecycle (new_event_loop/close in try/finally) is correct and consistent with other job handlers like _process_ingest",
+    "LLM service generate() API contract is correctly used with prompt, system, and temperature parameters matching the LLMService.generate signature",
+    "Tag name parsing correctly strips bullets/numbers, filters by length (2-30 chars), removes special characters, and caps at 3 suggestions",
+    "When master_key is None, the job is marked SUCCEEDED (not FAILED) with a warning log — correct graceful deferral behavior per the plan",
+    "All three ingest endpoints (file, text, url) consistently submit TAG_SUGGEST jobs with memory_id and session_id in the payload"
   ]
 }
 ```

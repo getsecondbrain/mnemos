@@ -206,6 +206,15 @@ async def ingest_file(
                 },
             )
         )
+        worker.submit_job(
+            Job(
+                job_type=JobType.TAG_SUGGEST,
+                payload={
+                    "memory_id": memory.id,
+                    "session_id": _session_id,
+                },
+            )
+        )
 
     return IngestResponse(
         memory_id=memory.id,
@@ -323,6 +332,15 @@ async def ingest_text(
                 },
             )
         )
+        worker.submit_job(
+            Job(
+                job_type=JobType.TAG_SUGGEST,
+                payload={
+                    "memory_id": memory.id,
+                    "session_id": _session_id,
+                },
+            )
+        )
 
     return IngestResponse(
         memory_id=memory.id,
@@ -435,6 +453,15 @@ async def ingest_url(
                     "memory_id": memory.id,
                     "plaintext": plaintext,
                     "title_plaintext": title_plaintext,
+                    "session_id": _session_id,
+                },
+            )
+        )
+        worker.submit_job(
+            Job(
+                job_type=JobType.TAG_SUGGEST,
+                payload={
+                    "memory_id": memory.id,
                     "session_id": _session_id,
                 },
             )
