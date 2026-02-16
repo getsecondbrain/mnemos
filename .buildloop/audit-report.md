@@ -1,59 +1,71 @@
-# Audit Report — P9.1
+# Audit Report — P9.2
 
 ```json
 {
   "high": [],
   "medium": [
     {
-      "file": "backend/app/routers/memories.py",
-      "line": 334,
-      "issue": "Comma-separated content_type with trailing/leading commas or double commas (e.g. 'photo,' or 'photo,,text' or ',photo') produces empty strings in the split list. These empty strings are passed into the SQL IN clause, potentially matching rows with empty content_type. Should filter out empty strings after split: `types = [t.strip() for t in content_type.split(',') if t.strip()]`",
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 350,
+      "issue": "Mobile slide-up sheet does not lock body scroll. When the modal overlay is open (fixed inset-0 z-50), the page behind the backdrop remains scrollable on touch devices. Users can accidentally scroll the timeline while interacting with the filter sheet. Should add document.body.style.overflow = 'hidden' on open and restore on close (via useEffect cleanup).",
       "category": "logic"
     },
     {
-      "file": "backend/app/routers/memories.py",
-      "line": 359,
-      "issue": "The date-only detection heuristic `'T' not in date_to` fails for ISO datetime strings using space separator (e.g. '2024-12-31 14:00:00'), which Python 3.12+ fromisoformat accepts. A space-separated datetime would be treated as date-only, causing +1 day adjustment that widens the range beyond what the user intended. Consider checking for both 'T' and ' ' in the string, or comparing whether the parsed datetime has hour/minute/second all zero as a more robust date-only detection.",
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 19,
+      "issue": "Filter state is initialized with the EMPTY_FILTERS constant reference: useState<FilterState>(EMPTY_FILTERS). While no current code mutates arrays in-place, the contentTypes[] and tagIds[] arrays inside EMPTY_FILTERS are shared mutable references. The freshEmptyFilters() utility exists in FilterPanel.tsx specifically to avoid this, but Layout doesn't use it. Should use freshEmptyFilters() or an inline literal as the initial state to be defensive.",
       "category": "logic"
+    },
+    {
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 19,
+      "issue": "Filter state (filters/setFilters) is held in Layout but never passed to child routes via Outlet context or any other mechanism. The FilterPanel UI works (sections toggle, state updates), but no page component (Timeline, Search, etc.) can read the current filter values. Until P9.3 wires this up, the filters are cosmetic only. This is expected per the plan but worth noting — the filters are fully disconnected from data loading.",
+      "category": "api-contract"
     }
   ],
   "low": [
     {
-      "file": "backend/app/routers/memories.py",
-      "line": 334,
-      "issue": "After filtering empty strings from content_type split, the `types` list could become empty (e.g. content_type=','). The `if content_type:` guard on line 333 passes for ',' since it's truthy, then `types` would be `[]` after filtering, and `Memory.content_type.in_([])` would produce a SQL `IN ()` clause that returns no rows. Harmless but semantically wrong — should skip the filter when types is empty.",
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 45,
+      "issue": "useFilterTags() fetches tags on mount in Layout (which renders on every route). If the user navigates to a page that doesn't use filters (e.g., /chat, /settings), the tag fetch still fires. This is wasted work but minimal — a single small API call. Could be optimized with lazy loading in the future.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 113,
+      "issue": "tagSearch state in FilterSections is local to each variant's FilterSections instance. If the user types a tag search in the mobile sheet, closes it, then reopens, the search is reset. This is acceptable UX but worth noting — the search filter does not persist across open/close cycles of the mobile sheet.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 199,
+      "issue": "Date range validation warning ('From is after To') is shown inline but the invalid date range is still sent to onFilterChange. The component does not prevent or correct the invalid state — the parent receives a logically impossible filter (dateFrom > dateTo) that will return zero results. Consider preventing dateTo < dateFrom via the min/max HTML attributes (which are set at lines 178 and 191) — but these only affect the date picker UI, not programmatic state.",
       "category": "logic"
     },
     {
-      "file": "backend/app/routers/memories.py",
-      "line": 343,
-      "issue": "The date_from parsing uses datetime.fromisoformat which in Python 3.12+ accepts a very wide range of formats including partial ISO strings. No length/format pre-validation is performed. While any invalid input raises ValueError (caught), unusual but valid inputs like '2024-W01' (ISO week) are not supported by fromisoformat and will correctly raise ValueError. This is acceptable behavior but could be documented.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "frontend/src/services/api.ts",
-      "line": 149,
-      "issue": "The `if (params?.content_type)` guard will skip forwarding content_type when it's an empty string, which is correct behavior matching the backend. However, this means a frontend caller cannot explicitly send content_type='' to reset a filter — they must omit the key entirely or pass undefined. Minor inconsistency with the backend which also treats empty string as no-filter.",
-      "category": "inconsistency"
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 349,
+      "issue": "Mobile sheet has no entry/exit animation — it appears and disappears instantly. The plan explicitly says 'For P9.2, skip the animation — instant show/hide is acceptable' so this is by design, but users may perceive it as janky on mobile.",
+      "category": "style"
     }
   ],
   "validated": [
-    "date_from and date_to parameters correctly parse ISO date strings and full datetime strings via datetime.fromisoformat, with proper ValueError handling returning 422",
-    "Timezone handling is correct: naive datetimes from fromisoformat get UTC tzinfo attached before comparison with tz-aware captured_at",
-    "date_to inclusive-day heuristic (date-only +1 day with < operator) is more correct than the plan's replace(hour=23,minute=59,second=59) approach, which would miss the last second's microseconds",
-    "date_from and date_to stack correctly with existing year filter via AND logic — no special handling needed, constraints narrow independently",
-    "Comma-separated content_type uses SQLAlchemy's .in_() which is parameterized and safe against SQL injection",
-    "Single content_type value still uses == comparison for backwards compatibility",
-    "visibility filter unchanged and correctly uses Literal type validation (returns 422 for invalid values)",
-    "tag_ids filter with JOIN/GROUP BY/HAVING correctly implements AND logic for multiple tags",
-    "Frontend api.ts correctly adds date_from and date_to to URLSearchParams and skips them when undefined/empty",
-    "Test coverage is thorough: 11 new tests covering date_from, date_to, date range, comma-separated content_type, compound stacking, invalid formats, year+date interaction, empty content_type, explicit datetime, and single content_type regression",
-    "Test for explicit midnight datetime (line 796) correctly verifies that datetime strings with 'T' are not given the +1 day adjustment",
-    "No SQL injection risk: all dynamic filters use SQLModel/SQLAlchemy parameterized query building",
-    "No race conditions: the list endpoint is read-only with no shared mutable state",
-    "No resource leaks: session is managed by FastAPI's dependency injection",
-    "from __future__ import annotations is compatible with FastAPI's type resolution for Query parameters including Literal types",
-    "order_by parameter only accepts two known values ('captured_at' falling through to 'created_at') — no injection vector"
+    "FilterPanel is a controlled component — receives filters as props and calls onFilterChange with updated values. Does not maintain its own copy of filter state. Correct per plan.",
+    "FilterState interface matches the plan: contentTypes[], dateFrom, dateTo, tagIds[], visibility with correct types and EMPTY_FILTERS defaults.",
+    "Tag data is shared between sidebar and mobile variants via useFilterTags() hook called once in Layout and passed as tagData prop, avoiding duplicate fetches.",
+    "Radio button groups use different name props for sidebar vs mobile variants ('sidebar-visibility' vs 'mobile-visibility'), preventing cross-interference between the two rendered instances.",
+    "CollapsibleSection correctly defaults to closed (defaultOpen ?? false), with Content Type set to defaultOpen per plan.",
+    "Active filter count logic correctly increments for each active filter category (contentTypes.length > 0, dateFrom || dateTo, tagIds.length > 0, visibility !== 'public').",
+    "Clear all button uses freshEmptyFilters() to create a new object, avoiding shared mutable reference issues.",
+    "Tag search filter (shown when > 10 tags) correctly filters by case-insensitive name substring.",
+    "Tags section handles loading, error, and empty states correctly with retry button.",
+    "Mobile sheet closes on Escape key, backdrop click, Done button, and route change — all four expected close mechanisms are implemented.",
+    "Layout correctly renders FilterPanel with variant='sidebar' inside hidden md:block wrapper for desktop, and variant='mobile' outside the nav for mobile.",
+    "The variant prop pattern avoids rendering the FilterPanel twice with duplicate state — both instances share the same filters/setFilters from Layout.",
+    "Date inputs use colorScheme: 'dark' inline style and appropriate Tailwind dark theme classes.",
+    "Content type values (text, photo, file, voice, url) match the backend's expected content_type categories.",
+    "API contract for listTags() is correct — called with no args, returns Tag[] with id, name, color fields all used by the component.",
+    "The listMemories API already accepts content_type (comma-separated), date_from, date_to, tag_ids, and visibility params from P9.1, ready for P9.3 integration."
   ]
 }
 ```

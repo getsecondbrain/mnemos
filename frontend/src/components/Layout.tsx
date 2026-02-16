@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import Logo from "./Logo";
+import FilterPanel, { EMPTY_FILTERS, useFilterTags } from "./FilterPanel";
+import type { FilterState } from "./FilterPanel";
 
 const navItems = [
   { to: "/capture", label: "Capture", icon: "+" },
@@ -14,6 +16,8 @@ const navItems = [
 
 export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
+  const tagData = useFilterTags();
   const location = useLocation();
 
   // Close mobile menu on route change
@@ -48,7 +52,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
         <div className="hidden md:block p-4 border-b border-gray-800">
           <Logo />
         </div>
-        <ul className="flex-1 py-2 space-y-1 overflow-y-auto">
+        <ul className="py-2 space-y-1">
           {navItems.map((item) => (
             <li key={item.to}>
               <NavLink
@@ -67,6 +71,10 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
             </li>
           ))}
         </ul>
+        {/* Desktop filter panel */}
+        <div className="hidden md:block flex-1 overflow-y-auto border-t border-gray-800">
+          <FilterPanel filters={filters} onFilterChange={setFilters} variant="sidebar" tagData={tagData} />
+        </div>
         <div className="p-4 border-t border-gray-800">
           <button
             onClick={onLogout}
@@ -76,6 +84,9 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
           </button>
         </div>
       </nav>
+
+      {/* Mobile filter trigger + sheet */}
+      <FilterPanel filters={filters} onFilterChange={setFilters} variant="mobile" tagData={tagData} />
 
       <main className="flex-1 overflow-y-auto p-4 md:p-6">
         <Outlet />
