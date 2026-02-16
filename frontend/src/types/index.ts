@@ -238,3 +238,53 @@ export interface LoopSetting {
   next_run_at: string;
   enabled: boolean;
 }
+
+/** Matches backend PersonRead schema */
+export interface Person {
+  id: string;
+  name: string;
+  name_encrypted: string | null;
+  name_dek: string | null;
+  immich_person_id: string | null;
+  face_thumbnail_path: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Matches backend PersonDetailRead schema */
+export interface PersonDetail extends Person {
+  memory_count: number;
+}
+
+/** Matches backend PersonCreate schema */
+export interface PersonCreate {
+  name: string;
+  name_encrypted?: string;
+  name_dek?: string;
+  immich_person_id?: string;
+}
+
+/** Matches backend PersonUpdate schema */
+export interface PersonUpdate {
+  name?: string;
+  name_encrypted?: string;
+  name_dek?: string;
+}
+
+/** Matches backend MemoryPersonRead schema */
+export interface MemoryPersonLink {
+  id: string;
+  memory_id: string;
+  person_id: string;
+  person_name: string;
+  source: string;
+  confidence: number | null;
+  created_at: string;
+}
+
+/** Matches backend LinkPersonRequest schema */
+export interface LinkPersonRequest {
+  person_id: string;
+  source?: "manual" | "immich" | "auto";
+  confidence?: number;
+}

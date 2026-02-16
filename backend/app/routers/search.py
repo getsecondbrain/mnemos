@@ -7,6 +7,7 @@ from sqlmodel import Session
 
 from app.db import get_session
 from app.dependencies import get_search_service, require_auth
+from app.models.person import MemoryPerson
 from app.services.search import SearchMode, SearchService
 
 router = APIRouter(prefix="/api/search", tags=["search"])
@@ -36,6 +37,7 @@ async def search_memories(
     top_k: int = Query(20, ge=1, le=100, description="Max results to return"),
     content_type: str | None = Query(None, description="Filter by content type"),
     tag_ids: list[str] | None = Query(None, description="Filter by tag IDs (AND logic)"),
+    person_ids: list[str] | None = Query(None, description="Filter by person IDs (AND logic)"),
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
     search_service: SearchService = Depends(get_search_service),
@@ -54,6 +56,7 @@ async def search_memories(
         top_k=top_k,
         content_type=content_type,
         tag_ids=tag_ids,
+        person_ids=person_ids,
     )
 
     return SearchResponse(

@@ -225,6 +225,113 @@ def test_list_memory_persons(client, memory_id):
     assert names == {"Alice", "Bob"}
 
 
+# --- Thumbnail endpoint ---
+
+
+def test_get_person_thumbnail_no_thumbnail(client, person_id):
+    """Thumbnail returns 404 when person has no face_thumbnail_path."""
+    resp = client.get(f"/api/persons/{person_id}/thumbnail")
+    assert resp.status_code == 404
+
+
+def test_get_person_thumbnail_returns_image(client, session, tmp_path):
+    """Thumbnail returns image bytes when thumbnail file exists."""
+    from unittest.mock import patch
+    from app.models.person import Person as PersonModel
+
+    # Create a person with a thumbnail path
+    person = PersonModel(name="Thumb Person", face_thumbnail_path="immich_thumbnails/test.jpg")
+    session.add(person)
+    session.commit()
+    session.refresh(person)
+
+    # Create the thumbnail file
+    thumb_dir = tmp_path / "immich_thumbnails"
+    thumb_dir.mkdir()
+    thumb_file = thumb_dir / "test.jpg"
+    thumb_file.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg-data")
+
+    # Patch get_settings to use our tmp_path as data_dir
+    from app.config import Settings
+    fake_settings = Settings(data_dir=tmp_path)
+    with patch("app.routers.persons.get_settings", return_value=fake_settings):
+        resp = client.get(f"/api/persons/{person.id}/thumbnail")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.content == b"\xff\xd8\xff\xe0fake-jpeg-data"
+
+
+def test_get_person_thumbnail_not_found_person(client):
+    """Thumbnail returns 404 for nonexistent person."""
+    resp = client.get("/api/persons/nonexistent-id/thumbnail")
+    assert resp.status_code == 404
+
+
+# --- person_ids filter on list_memories ---
+
+
+def test_list_memories_person_ids_filter(client, session):
+    """Filtering memories by person_ids returns only linked memories."""
+    from app.models.person import Person as PersonModel, MemoryPerson as MemoryPersonModel
+
+    # Create two memories
+    m1 = Memory(title="Memory 1", content="Content 1")
+    m2 = Memory(title="Memory 2", content="Content 2")
+    session.add_all([m1, m2])
+    session.commit()
+    session.refresh(m1)
+    session.refresh(m2)
+
+    # Create a person and link to m1 only
+    p1 = PersonModel(name="Alice")
+    session.add(p1)
+    session.commit()
+    session.refresh(p1)
+
+    mp = MemoryPersonModel(memory_id=m1.id, person_id=p1.id)
+    session.add(mp)
+    session.commit()
+
+    # Filter by person_ids should return only m1
+    resp = client.get("/api/memories", params={"person_ids": [p1.id]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["id"] == m1.id
+
+
+def test_list_memories_person_ids_and_logic(client, session):
+    """person_ids filter uses AND logic: only memories linked to ALL persons."""
+    from app.models.person import Person as PersonModel, MemoryPerson as MemoryPersonModel
+
+    m1 = Memory(title="Memory 1", content="Content 1")
+    m2 = Memory(title="Memory 2", content="Content 2")
+    session.add_all([m1, m2])
+    session.commit()
+    session.refresh(m1)
+    session.refresh(m2)
+
+    p1 = PersonModel(name="Alice")
+    p2 = PersonModel(name="Bob")
+    session.add_all([p1, p2])
+    session.commit()
+    session.refresh(p1)
+    session.refresh(p2)
+
+    # Link both persons to m1, only p1 to m2
+    session.add(MemoryPersonModel(memory_id=m1.id, person_id=p1.id))
+    session.add(MemoryPersonModel(memory_id=m1.id, person_id=p2.id))
+    session.add(MemoryPersonModel(memory_id=m2.id, person_id=p1.id))
+    session.commit()
+
+    # Filter by both persons should return only m1
+    resp = client.get("/api/memories", params={"person_ids": [p1.id, p2.id]})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["id"] == m1.id
+
+
 def test_persons_auth_required(client_no_auth):
     # All endpoints should return 401/403 without auth
     assert client_no_auth.get("/api/persons").status_code == 403

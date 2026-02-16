@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import { listTags } from "../services/api";
-import type { Tag } from "../types";
+import { listTags, listPersons, fetchPersonThumbnail } from "../services/api";
+import type { Tag, Person } from "../types";
 
 export interface FilterState {
   contentTypes: string[];
   dateFrom: string | null;
   dateTo: string | null;
   tagIds: string[];
+  personIds: string[];
   visibility: "all" | "public" | "private";
 }
 
@@ -16,12 +17,13 @@ export const EMPTY_FILTERS: FilterState = {
   dateFrom: null,
   dateTo: null,
   tagIds: [],
+  personIds: [],
   visibility: "public",
 };
 
 /** Returns a fresh copy of EMPTY_FILTERS to avoid shared-mutable-reference bugs */
 function freshEmptyFilters(): FilterState {
-  return { contentTypes: [], dateFrom: null, dateTo: null, tagIds: [], visibility: "public" };
+  return { contentTypes: [], dateFrom: null, dateTo: null, tagIds: [], personIds: [], visibility: "public" };
 }
 
 /** Shared tag data to avoid duplicate fetches across sidebar/mobile variants */
@@ -58,10 +60,45 @@ export function useFilterTags(): TagData {
   return { tags, tagsLoading, tagsError, retryLoadTags: loadTags };
 }
 
+/** Shared person data to avoid duplicate fetches across sidebar/mobile variants */
+export interface PersonData {
+  persons: Person[];
+  personsLoading: boolean;
+  personsError: boolean;
+  retryLoadPersons: () => void;
+}
+
+/** Hook to load persons once; share across FilterPanel variants */
+export function useFilterPersons(): PersonData {
+  const [persons, setPersons] = useState<Person[]>([]);
+  const [personsLoading, setPersonsLoading] = useState(true);
+  const [personsError, setPersonsError] = useState(false);
+
+  const loadPersons = useCallback(async () => {
+    setPersonsLoading(true);
+    setPersonsError(false);
+    try {
+      const result = await listPersons({ limit: 200 });
+      setPersons(result);
+    } catch {
+      setPersonsError(true);
+    } finally {
+      setPersonsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPersons();
+  }, [loadPersons]);
+
+  return { persons, personsLoading, personsError, retryLoadPersons: loadPersons };
+}
+
 export function isFilterEmpty(filters: FilterState): boolean {
   return filters.contentTypes.length === 0 &&
     !filters.dateFrom && !filters.dateTo &&
     filters.tagIds.length === 0 &&
+    filters.personIds.length === 0 &&
     filters.visibility === "public";
 }
 
@@ -78,6 +115,7 @@ export function useFilterSearchParams(): {
   removeContentType: (ct: string) => void;
   removeDateRange: () => void;
   removeTagId: (tagId: string) => void;
+  removePersonId: (personId: string) => void;
   resetVisibility: () => void;
 } {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -94,11 +132,15 @@ export function useFilterSearchParams(): {
       tagIds = [...tagIds, legacyTag];
     }
 
+    const personIdsRaw = searchParams.get("person_ids") || "";
+    const personIds = personIdsRaw ? personIdsRaw.split(",").filter(Boolean) : [];
+
     return {
       contentTypes,
       dateFrom: searchParams.get("date_from") || null,
       dateTo: searchParams.get("date_to") || null,
       tagIds,
+      personIds,
       visibility: parseVisibility(searchParams.get("visibility")),
     };
   }, [searchParams]);
@@ -126,6 +168,12 @@ export function useFilterSearchParams(): {
         next.set("tag_ids", fs.tagIds.join(","));
       } else {
         next.delete("tag_ids");
+      }
+      // Person IDs
+      if (fs.personIds.length > 0) {
+        next.set("person_ids", fs.personIds.join(","));
+      } else {
+        next.delete("person_ids");
       }
       // Visibility
       if (fs.visibility !== "public") next.set("visibility", fs.visibility);
@@ -171,6 +219,16 @@ export function useFilterSearchParams(): {
       return next;
     }, { replace: true });
   }, [setSearchParams]);
+  const removePersonId = useCallback((personId: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = (next.get("person_ids") || "").split(",").filter(Boolean);
+      const updated = current.filter(id => id !== personId);
+      if (updated.length > 0) next.set("person_ids", updated.join(","));
+      else next.delete("person_ids");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const resetVisibility = useCallback(() => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
@@ -179,7 +237,7 @@ export function useFilterSearchParams(): {
     }, { replace: true });
   }, [setSearchParams]);
 
-  return { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility };
+  return { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility };
 }
 
 export const CONTENT_TYPES = [
@@ -222,19 +280,67 @@ function CollapsibleSection({
   );
 }
 
+export function PersonThumbnail({ personId, thumbnailPath, size = 18 }: { personId: string; thumbnailPath: string | null; size?: number }) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!thumbnailPath) return;
+    let revoked = false;
+    fetchPersonThumbnail(personId)
+      .then((blob) => {
+        if (revoked) return;
+        setUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => {});
+    return () => {
+      revoked = true;
+      setUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    };
+  }, [personId, thumbnailPath]);
+
+  if (!url) {
+    return (
+      <div
+        className="rounded-full bg-gray-700 flex items-center justify-center text-gray-500 shrink-0"
+        style={{ width: size, height: size, fontSize: size * 0.5 }}
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor" width={size * 0.6} height={size * 0.6}>
+          <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z" />
+        </svg>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={url}
+      alt=""
+      className="rounded-full object-cover shrink-0"
+      style={{ width: size, height: size }}
+    />
+  );
+}
+
 function FilterSections({
   filters,
   onFilterChange,
   tagData,
+  personData,
   radioGroupName,
 }: {
   filters: FilterState;
   onFilterChange: (filters: FilterState) => void;
   tagData: TagData;
+  personData: PersonData;
   radioGroupName: string;
 }) {
   const { tags, tagsLoading, tagsError, retryLoadTags: loadTags } = tagData;
+  const { persons, personsLoading, personsError, retryLoadPersons: loadPersons } = personData;
   const [tagSearch, setTagSearch] = useState("");
+  const [personSearch, setPersonSearch] = useState("");
 
   const activeCount = getActiveFilterCount(filters);
 
@@ -252,10 +358,24 @@ function FilterSections({
     onFilterChange({ ...filters, tagIds: next });
   };
 
+  const togglePerson = (personId: string) => {
+    const next = filters.personIds.includes(personId)
+      ? filters.personIds.filter((id) => id !== personId)
+      : [...filters.personIds, personId];
+    onFilterChange({ ...filters, personIds: next });
+  };
+
   const filteredTags =
     tagSearch.trim() === ""
       ? tags
       : tags.filter((t) => t.name.toLowerCase().includes(tagSearch.toLowerCase()));
+
+  // Only show named persons in the filter
+  const namedPersons = persons.filter((p) => p.name.trim() !== "");
+  const filteredPersons =
+    personSearch.trim() === ""
+      ? namedPersons
+      : namedPersons.filter((p) => p.name.toLowerCase().includes(personSearch.toLowerCase()));
 
   return (
     <div>
@@ -372,6 +492,51 @@ function FilterSections({
         )}
       </CollapsibleSection>
 
+      {/* People */}
+      <CollapsibleSection title="People">
+        {personsLoading ? (
+          <p className="text-[10px] text-gray-500">Loading...</p>
+        ) : personsError ? (
+          <p className="text-[10px] text-gray-500">
+            Failed to load people.{" "}
+            <button onClick={loadPersons} className="text-blue-400 hover:underline">
+              Retry
+            </button>
+          </p>
+        ) : namedPersons.length === 0 ? (
+          <p className="text-[10px] text-gray-500">No people found</p>
+        ) : (
+          <div>
+            {namedPersons.length > 10 && (
+              <input
+                type="text"
+                placeholder="Filter people..."
+                value={personSearch}
+                onChange={(e) => setPersonSearch(e.target.value)}
+                className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full mb-2"
+              />
+            )}
+            <div className="max-h-40 overflow-y-auto space-y-1.5">
+              {filteredPersons.map((person) => (
+                <label key={person.id} className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={filters.personIds.includes(person.id)}
+                    onChange={() => togglePerson(person.id)}
+                    className="accent-blue-500 w-3.5 h-3.5 rounded bg-gray-800 border-gray-600"
+                  />
+                  <PersonThumbnail personId={person.id} thumbnailPath={person.face_thumbnail_path} size={18} />
+                  <span className="text-xs text-gray-300 truncate">{person.name}</span>
+                </label>
+              ))}
+              {filteredPersons.length === 0 && (
+                <p className="text-[10px] text-gray-500">No people found</p>
+              )}
+            </div>
+          </div>
+        )}
+      </CollapsibleSection>
+
       {/* Visibility */}
       <CollapsibleSection title="Visibility">
         <div className="space-y-1.5">
@@ -398,6 +563,7 @@ function getActiveFilterCount(filters: FilterState): number {
   if (filters.contentTypes.length > 0) count++;
   if (filters.dateFrom || filters.dateTo) count++;
   if (filters.tagIds.length > 0) count++;
+  if (filters.personIds.length > 0) count++;
   if (filters.visibility !== "public") count++;
   return count;
 }
@@ -407,6 +573,7 @@ interface FilterPanelProps {
   onFilterChange: (filters: FilterState) => void;
   variant: "sidebar" | "mobile";
   tagData: TagData;
+  personData: PersonData;
 }
 
 export default function FilterPanel({
@@ -414,6 +581,7 @@ export default function FilterPanel({
   onFilterChange,
   variant,
   tagData,
+  personData,
 }: FilterPanelProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const activeCount = getActiveFilterCount(filters);
@@ -435,7 +603,7 @@ export default function FilterPanel({
   }, [mobileOpen]);
 
   if (variant === "sidebar") {
-    return <FilterSections filters={filters} onFilterChange={onFilterChange} tagData={tagData} radioGroupName="sidebar-visibility" />;
+    return <FilterSections filters={filters} onFilterChange={onFilterChange} tagData={tagData} personData={personData} radioGroupName="sidebar-visibility" />;
   }
 
   // Mobile variant
@@ -484,7 +652,7 @@ export default function FilterPanel({
               <div className="w-10 h-1 rounded-full bg-gray-700" />
             </div>
             <div className="px-1 pb-4">
-              <FilterSections filters={filters} onFilterChange={onFilterChange} tagData={tagData} radioGroupName="mobile-visibility" />
+              <FilterSections filters={filters} onFilterChange={onFilterChange} tagData={tagData} personData={personData} radioGroupName="mobile-visibility" />
             </div>
             {/* Done button */}
             <div className="sticky bottom-0 p-4 border-t border-gray-800 bg-gray-900">

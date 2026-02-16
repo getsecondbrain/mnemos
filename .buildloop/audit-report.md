@@ -1,113 +1,104 @@
-# Audit Report — P11.2
+# Audit Report — P11.3
 
 ```json
 {
   "high": [
     {
-      "file": "backend/app/services/immich.py",
-      "line": 55,
-      "issue": "Each call to _get(), _put(), and _download_thumbnail() creates a new httpx.AsyncClient, which establishes a fresh TCP connection and TLS handshake per request. During sync_people(), this means N*2+1 HTTP connections for N people (1 list call + N thumbnail downloads + N potential updates). For large Immich libraries (hundreds/thousands of people), this will cause excessive connection churn, potential ephemeral port exhaustion, and slow syncs. Should use a single AsyncClient instance (e.g. via async context manager on the service or per-method client reuse).",
-      "category": "resource-leak"
-    },
-    {
-      "file": "backend/app/services/immich.py",
-      "line": 213,
-      "issue": "In sync_faces_for_asset, the savepoint (nested = session.begin_nested()) is created but never explicitly committed on the happy path (line 216-217 flushes but doesn't commit the savepoint). If flush succeeds, the savepoint remains open. If a subsequent face iteration hits the outer except (line 222), the previously opened savepoint is abandoned without rollback. While SQLAlchemy may handle this on final commit (line 230), in error scenarios where the outer except fires with an open savepoint from a previous successful flush iteration, the behavior is fragile. Missing `nested.commit()` after successful flush.",
+      "file": "frontend/src/components/People.tsx",
+      "line": 334,
+      "issue": "Uses <a href> instead of React Router <Link to> for memory navigation. This causes a full page reload, which wipes all in-memory state including decrypted encryption keys, auth state, and component state. After clicking a memory link the user may be redirected to the login screen or experience a blank state. Must use <Link to={`/memory/${memory.id}`}> and import Link from react-router-dom.",
       "category": "logic"
     },
     {
-      "file": "backend/app/services/immich.py",
-      "line": 50,
-      "issue": "If settings.immich_url is not set (empty string), calling .rstrip('/') on an empty string succeeds silently, and _base_url becomes ''. Then _get() would make requests to paths like '/api/people' without a host, which httpx would interpret as a relative URL and raise an error. While the worker has a guard (line 1518 in worker.py), the router endpoint push_name_to_immich creates ImmichService directly after its own guard check — but if immich_url were set to just whitespace, the guard `if not settings.immich_url` passes (whitespace is truthy) but the URL would be invalid. Should strip and validate the URL.",
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 24,
+      "issue": "The 'Timeline' nav item is missing from navItems array. The default route (/) redirects to /timeline, but there is no sidebar link to navigate back to the Timeline view. The plan specifies 'Insert [People] after Timeline/Capture and before Search', implying Timeline should be a nav item. Users who navigate away from Timeline have no nav link to return to it. Add { to: '/timeline', label: 'Timeline', icon: '\u2630' } between Capture and People.",
       "category": "logic"
     }
   ],
   "medium": [
     {
-      "file": "backend/app/services/immich.py",
-      "line": 96,
-      "issue": "sync_people() downloads a thumbnail for EVERY person on every sync cycle, even if the person and thumbnail are unchanged. The unchanged check on line 131 compares the path string but the thumbnail bytes are always re-downloaded (line 130). For large Immich libraries, this is wasteful — should check if local file exists and has same size or use an ETag/If-Modified-Since header before downloading.",
+      "file": "frontend/src/components/People.tsx",
+      "line": 133,
+      "issue": "handleSync() polling via recursive setTimeout continues even if the component unmounts, calling setState on an unmounted component. This causes React warnings and potential memory leaks. The polling also only detects changes by comparing persons.length — if the sync only updates existing person names/thumbnails without adding new ones, it will poll all 10 attempts (15 seconds) before stopping. Should use a ref to track mount status and clear timeouts on unmount.",
+      "category": "resource-leak"
+    },
+    {
+      "file": "frontend/src/components/People.tsx",
+      "line": 346,
+      "issue": "Uses `new Date(memory.captured_at).toLocaleDateString()` to format dates, but the backend stores UTC datetimes without the 'Z' suffix. This can cause incorrect date parsing in some browsers (may interpret as local time instead of UTC). The Timeline component handles this correctly with its formatDate() function that appends 'Z' when missing. Should reuse the same pattern or extract a shared date formatter.",
       "category": "logic"
     },
     {
-      "file": "backend/app/services/immich.py",
-      "line": 163,
-      "issue": "sync_people() calls session.commit() at line 163 after the loop, but each person is already committed via nested.commit() at line 152 inside the loop. The final session.commit() is a no-op if all savepoints were committed, but if a person fails and nested.rollback() is called (line 155), the previously committed persons remain committed. This is correct behavior, but the dual-commit pattern is confusing. More importantly, if the final session.commit() itself raises (e.g., DB locked), persons already committed via savepoints are safe but the result object's counts are lost with the exception.",
+      "file": "backend/app/routers/search.py",
+      "line": 10,
+      "issue": "Imports `MemoryPerson` from `app.models.person` but never uses it. The person_ids filtering is handled entirely inside the search service via raw SQL. This is a dead import that may cause confusion.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "frontend/src/components/People.tsx",
+      "line": 166,
+      "issue": "handleTagSave() unconditionally calls pushNameToImmich() after updatePerson(), which will fail with HTTP 400 ('Immich not configured') for users without Immich setup. The error is silently caught, but this is a wasted HTTP request on every tag save for non-Immich users. Should check if the person has an immich_person_id before attempting to push.",
       "category": "error-handling"
     },
     {
-      "file": "backend/tests/test_immich.py",
-      "line": 365,
-      "issue": "Tests test_sync_immich_endpoint_returns_400_when_not_configured, test_push_name_endpoint_returns_400_for_non_immich_person, and test_push_name_endpoint_returns_404_for_missing_person use the `client` fixture but never actually test the success paths or the 404/400 for non-Immich persons (the tests acknowledge in comments that they'll hit 'Immich not configured' before reaching the intended assertion). The test_push_name_endpoint_returns_404_for_missing_person test asserts status 400 but claims to test 404 — the test name is misleading and the actual intended behavior is never verified.",
-      "category": "logic"
-    },
-    {
-      "file": "backend/tests/test_immich.py",
-      "line": 60,
-      "issue": "Tests rely on the `session` fixture from conftest.py which uses an in-memory SQLite with StaticPool, but the test file does not explicitly declare a dependency on the `engine` fixture. The `session` fixture depends on `engine`. If test isolation breaks (e.g., tables not created), the tests will fail with confusing errors. The mock patching via `patch('httpx.AsyncClient.get', new=mock_get)` patches the method on the class, which could leak between tests if not properly restored — but since `with patch(...)` is used, this should be safe.",
+      "file": "frontend/src/components/People.tsx",
+      "line": 236,
+      "issue": "When an error occurs while loading person details (line 225), the error state is set but never cleared on subsequent successful actions. If a user clicks 'Retry' after an error loading person details, the error banner stays visible because loadPersons() is called, not handleSelectPerson(). Also, the error message is generic ('Failed to load person details') for any error in handleSelectPerson, even though it could be a network error or auth error.",
       "category": "error-handling"
-    },
-    {
-      "file": "backend/app/services/immich.py",
-      "line": 75,
-      "issue": "_download_thumbnail writes arbitrary bytes from the Immich server to disk at a predictable path. While the ID is validated against _SAFE_ID_RE (preventing path traversal), there is no validation that the response content is actually a JPEG image. A compromised Immich server could serve arbitrary content (e.g., executable, polyglot file). The file is saved with a .jpg extension but the content is not verified. Low-severity since these are only stored on the server and not served to users via an executable path, but worth noting.",
-      "category": "security"
-    },
-    {
-      "file": "backend/app/routers/persons.py",
-      "line": 112,
-      "issue": "push_name_to_immich endpoint passes person.name (which is a plaintext field) to Immich. If the person was created via Immich sync with name='Unknown' and the user updated the name only via the encrypted name_encrypted field, person.name might still be 'Unknown' or stale. The push would send the wrong name to Immich. The endpoint should verify that person.name is the intended value to push, or allow the caller to specify the name in the request body.",
-      "category": "logic"
     }
   ],
   "low": [
     {
-      "file": "backend/app/services/immich.py",
-      "line": 17,
-      "issue": "The _SAFE_ID_RE pattern `^[a-fA-F0-9\\-]+$` accepts strings of only dashes (e.g., '---') or arbitrarily long IDs. While unlikely from Immich, adding a length constraint (e.g., 36-40 chars for UUID format) would be more robust.",
+      "file": "frontend/src/components/People.tsx",
+      "line": 178,
+      "issue": "The decryptMemories function is duplicated from Timeline.tsx (identical logic). Should be extracted into a shared utility to avoid code drift and maintain consistency.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "frontend/src/components/People.tsx",
+      "line": 116,
+      "issue": "listPersons({ limit: 200 }) hardcodes a limit of 200 persons. Users with more than 200 people (e.g. heavy Immich users with many detected faces) will see a truncated list with no indication that more exist. Should either paginate or increase the limit with a 'load more' option.",
       "category": "hardcoded"
     },
     {
-      "file": "backend/app/services/immich.py",
-      "line": 52,
-      "issue": "HTTP timeout of 30.0 seconds is hardcoded. For thumbnail downloads of large images or slow network connections, this may be too short. For the initial people list API call, it may be too long for a responsive user experience. Should be configurable or use different timeouts for different operation types.",
+      "file": "backend/app/routers/persons.py",
+      "line": 144,
+      "issue": "The _SAFE_ID_RE regex `^[a-zA-Z0-9\\-]+$` validates person_id format for path traversal protection, but this regex is redundant with the subsequent database lookup (line 156) and path traversal check (line 167). The person record lookup already ensures the person exists, and the resolve()+is_relative_to() check prevents traversal. The regex is defense-in-depth (good) but worth noting it rejects valid UUID7 IDs that may contain underscores in some implementations.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "frontend/src/components/FaceTagModal.tsx",
+      "line": 53,
+      "issue": "Autocomplete suggestions filter existing persons by name substring match but only show the first 5 results with no scroll or 'show more' option. If a user has many people with similar names (e.g., 'Smith'), they may not find the right person. Minor UX issue.",
       "category": "hardcoded"
     },
     {
-      "file": "backend/app/services/loop_scheduler.py",
-      "line": 24,
-      "issue": "The immich_sync loop is always initialized in the scheduler and will always create a LoopState row, even when Immich is not configured. This means the scheduler will check and fire IMMICH_SYNC jobs every 6 hours even when Immich is disabled, wasting a worker cycle per fire (though the handler exits quickly). Consider conditionally registering the loop only when immich_url is set.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "backend/tests/test_immich.py",
-      "line": 355,
-      "issue": "test_service_not_created_without_config only asserts that settings fields are empty — it doesn't actually test any service or worker behavior. It provides no meaningful coverage of the guard logic.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "backend/app/worker.py",
-      "line": 1504,
-      "issue": "_process_immich_sync only calls sync_people() but does NOT call sync_faces_for_asset(). The task description requires both methods to be exercised. sync_faces_for_asset needs an asset_id and memory_id, so it can't run in a standalone periodic sync — it needs to be triggered per-asset during photo ingest. This is a design gap: the sync_faces_for_asset method exists but has no caller in the current implementation.",
-      "category": "inconsistency"
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 81,
+      "issue": "useFilterPersons() also hardcodes limit: 200 for the sidebar person filter, matching the People.tsx limit. Same truncation concern for large person sets.",
+      "category": "hardcoded"
     }
   ],
   "validated": [
-    "IMMICH_SYNC added to JobType enum correctly with value 'immich_sync' matching the loop scheduler key",
-    "Worker dispatch in _process_job correctly routes IMMICH_SYNC to _process_immich_sync",
-    "Config settings immich_url, immich_api_key, immich_sync_interval_hours correctly added to Settings with appropriate defaults",
-    ".env.example has correct commented-out Immich config section",
-    "Route ordering in persons.py is correct: POST /sync-immich defined before GET /{person_id} preventing path conflicts",
-    "ImmichService ID validation via _validate_id prevents path traversal attacks in Immich API URLs",
-    "sync_people uses begin_nested() savepoints for per-person error isolation (Known Pattern #8)",
-    "sync_faces_for_asset handles IntegrityError on duplicate MemoryPerson links correctly (Known Pattern #5)",
-    "push_person_name correctly returns False for persons without immich_person_id without making HTTP calls",
-    "Worker IMMICH_SYNC handler has proper guard checking both immich_url and immich_api_key before proceeding",
-    "Worker handler follows established try/except/retry skeleton pattern matching other handlers",
-    "Event loop is properly created and closed in finally block in _process_immich_sync",
-    "Tests cover key scenarios: create, update, unchanged, HTTP error, per-person failure, faces, duplicates, push name success/failure",
-    "No new dependencies required — httpx already in requirements.txt",
-    "Persons router correctly uses Depends(require_auth) on all new endpoints"
+    "Backend person_ids filter in memories.py uses correct subquery pattern to avoid cartesian product with existing tag_ids join — verified the GROUP BY / HAVING / IN logic is correct for AND semantics",
+    "Backend search.py correctly passes person_ids through to SearchService.search() which applies post-filtering via _filter_by_persons() using AND logic with HAVING COUNT(DISTINCT person_id) = person_count",
+    "Backend thumbnail endpoint has proper path traversal protection: validates person_id format with regex, resolves the path, and checks is_relative_to(data_dir) before reading",
+    "Backend person CRUD endpoints all require auth via Depends(require_auth)",
+    "Frontend FilterPanel correctly adds personIds to FilterState, URL search params (comma-separated), and provides granular removePersonId callback",
+    "Frontend Timeline.tsx correctly passes person_ids to listMemories and includes filters.personIds.join(',') in the useEffect dependency array",
+    "Frontend api.ts listMemories correctly uses query.append('person_ids', pid) for each person_id (multi-value query params matching FastAPI's list[str] expectation)",
+    "Frontend FaceTagModal correctly locks body scroll on mount and restores on unmount",
+    "Frontend FaceTagModal stopPropagation on modal content div correctly prevents backdrop clicks from closing the modal",
+    "Backend link_person_to_memory is idempotent — checks for existing link before creating, handles IntegrityError race condition with savepoint rollback",
+    "Backend delete_person correctly cascades by deleting all MemoryPerson associations before deleting the Person record",
+    "Backend delete_memory includes 'memory_persons' in the list of dependent tables to clean up (line 492)",
+    "Frontend types/index.ts Person, PersonDetail, PersonCreate, PersonUpdate, MemoryPersonLink, and LinkPersonRequest all match the backend Pydantic schemas",
+    "Frontend App.tsx correctly adds /people route inside the Layout route group with proper auth guarding",
+    "Frontend PersonThumbnail component correctly revokes object URLs on cleanup to prevent memory leaks",
+    "Backend search service _filter_by_persons uses parameterized queries (bindparams) avoiding SQL injection",
+    "Test coverage includes: CRUD operations, pagination, search, duplicate link handling, cascade deletes, auth requirement, thumbnail endpoint (no thumbnail, with thumbnail, not found), person_ids filter (basic and AND logic)",
+    "FaceTagModal save button is correctly disabled when name input is empty or save is in progress"
   ]
 }
 ```

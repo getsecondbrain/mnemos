@@ -18,6 +18,12 @@ import type {
   MemoryTag,
   Suggestion,
   LoopSetting,
+  Person,
+  PersonDetail,
+  PersonCreate,
+  PersonUpdate,
+  MemoryPersonLink,
+  LinkPersonRequest,
 } from "../types";
 
 const BASE_URL = "/api";
@@ -139,6 +145,7 @@ export async function listMemories(params?: {
   limit?: number;
   content_type?: string;
   tag_ids?: string[];
+  person_ids?: string[];
   year?: number;
   order_by?: string;
   visibility?: string;  // "public" | "private" | "all"
@@ -152,6 +159,11 @@ export async function listMemories(params?: {
   if (params?.tag_ids) {
     for (const tid of params.tag_ids) {
       query.append("tag_ids", tid);
+    }
+  }
+  if (params?.person_ids) {
+    for (const pid of params.person_ids) {
+      query.append("person_ids", pid);
     }
   }
   if (params?.year != null) query.set("year", String(params.year));
@@ -293,6 +305,7 @@ export async function searchMemories(params: {
   top_k?: number;
   content_type?: string;
   tag_ids?: string[];
+  person_ids?: string[];
 }): Promise<SearchResponse> {
   const query = new URLSearchParams();
   query.set("q", params.q);
@@ -302,6 +315,11 @@ export async function searchMemories(params: {
   if (params.tag_ids) {
     for (const tid of params.tag_ids) {
       query.append("tag_ids", tid);
+    }
+  }
+  if (params.person_ids) {
+    for (const pid of params.person_ids) {
+      query.append("person_ids", pid);
     }
   }
   return request<SearchResponse>(`/search?${query.toString()}`);
@@ -591,6 +609,97 @@ export async function updateLoopSetting(
   return request<LoopSetting>(`/settings/loops/${loopName}`, {
     method: "PUT",
     body: JSON.stringify(update),
+  });
+}
+
+// --- Person endpoints -------------------------------------------------------
+
+export async function listPersons(params?: {
+  skip?: number;
+  limit?: number;
+  q?: string;
+}): Promise<Person[]> {
+  const query = new URLSearchParams();
+  if (params?.skip != null) query.set("skip", String(params.skip));
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.q) query.set("q", params.q);
+  const qs = query.toString();
+  return request<Person[]>(`/persons${qs ? `?${qs}` : ""}`);
+}
+
+export async function getPerson(id: string): Promise<PersonDetail> {
+  return request<PersonDetail>(`/persons/${id}`);
+}
+
+export async function createPerson(body: PersonCreate): Promise<Person> {
+  return request<Person>("/persons", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updatePerson(id: string, body: PersonUpdate): Promise<Person> {
+  return request<Person>(`/persons/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deletePerson(id: string): Promise<void> {
+  return request<void>(`/persons/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export function getPersonThumbnailUrl(personId: string): string {
+  return `/api/persons/${encodeURIComponent(personId)}/thumbnail`;
+}
+
+export async function fetchPersonThumbnail(personId: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getAccessTokenFn?.();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const resp = await fetch(`${BASE_URL}/persons/${encodeURIComponent(personId)}/thumbnail`, {
+    headers,
+  });
+  if (!resp.ok) throw new ApiError(resp.status, `Failed to fetch thumbnail: ${resp.status}`);
+  return resp.blob();
+}
+
+export async function linkPersonToMemory(
+  memoryId: string,
+  body: LinkPersonRequest,
+): Promise<MemoryPersonLink> {
+  return request<MemoryPersonLink>(`/memories/${memoryId}/persons`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function unlinkPersonFromMemory(
+  memoryId: string,
+  personId: string,
+): Promise<void> {
+  return request<void>(`/memories/${memoryId}/persons/${personId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function listMemoryPersons(memoryId: string): Promise<MemoryPersonLink[]> {
+  return request<MemoryPersonLink[]>(`/memories/${memoryId}/persons`);
+}
+
+export async function triggerImmichSync(): Promise<{ status: string }> {
+  return request<{ status: string }>("/persons/sync-immich", {
+    method: "POST",
+  });
+}
+
+export async function pushNameToImmich(personId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/persons/${personId}/push-name-to-immich`, {
+    method: "POST",
   });
 }
 

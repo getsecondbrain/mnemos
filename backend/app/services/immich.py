@@ -112,7 +112,7 @@ class ImmichService:
             try:
                 immich_id = _validate_id(immich_person["id"])
                 immich_name = immich_person.get("name", "").strip()
-                display_name = immich_name if immich_name else "Unknown"
+                display_name = immich_name  # Keep empty for unnamed — frontend shows these in "Untagged Faces"
 
                 # Look up existing local person
                 existing = session.exec(
@@ -186,7 +186,7 @@ class ImmichService:
 
                 immich_person_id = _validate_id(face_person["id"])
                 immich_name = face_person.get("name", "").strip()
-                display_name = immich_name if immich_name else "Unknown"
+                display_name = immich_name  # Keep empty for unnamed — frontend shows these in "Untagged Faces"
 
                 # Find or create local person
                 person = session.exec(

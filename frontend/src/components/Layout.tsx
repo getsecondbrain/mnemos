@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { NavLink, Outlet, useLocation, useOutletContext } from "react-router-dom";
 import Logo from "./Logo";
-import FilterPanel, { useFilterTags, useFilterSearchParams } from "./FilterPanel";
-import type { FilterState, TagData } from "./FilterPanel";
+import FilterPanel, { useFilterTags, useFilterPersons, useFilterSearchParams } from "./FilterPanel";
+import type { FilterState, TagData, PersonData } from "./FilterPanel";
 
 export interface LayoutOutletContext {
   filters: FilterState;
@@ -11,8 +11,10 @@ export interface LayoutOutletContext {
   removeContentType: (ct: string) => void;
   removeDateRange: () => void;
   removeTagId: (tagId: string) => void;
+  removePersonId: (personId: string) => void;
   resetVisibility: () => void;
   tagData: TagData;
+  personData: PersonData;
 }
 
 export function useLayoutFilters(): LayoutOutletContext {
@@ -21,6 +23,7 @@ export function useLayoutFilters(): LayoutOutletContext {
 
 const navItems = [
   { to: "/capture", label: "Capture", icon: "+" },
+  { to: "/people", label: "People", icon: "\u{1F464}" },
   { to: "/search", label: "Search", icon: "\u2315" },
   { to: "/chat", label: "Chat", icon: "\uD83D\uDCAC" },
   { to: "/graph", label: "Graph", icon: "\u25C9" },
@@ -31,8 +34,9 @@ const navItems = [
 
 export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility } = useFilterSearchParams();
+  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility } = useFilterSearchParams();
   const tagData = useFilterTags();
+  const personData = useFilterPersons();
   const location = useLocation();
 
   // Close mobile menu on route change
@@ -88,7 +92,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
         </ul>
         {/* Desktop filter panel */}
         <div className="hidden md:block flex-1 overflow-y-auto border-t border-gray-800">
-          <FilterPanel filters={filters} onFilterChange={setFilters} variant="sidebar" tagData={tagData} />
+          <FilterPanel filters={filters} onFilterChange={setFilters} variant="sidebar" tagData={tagData} personData={personData} />
         </div>
         <div className="p-4 border-t border-gray-800">
           <button
@@ -101,10 +105,10 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
       </nav>
 
       {/* Mobile filter trigger + sheet */}
-      <FilterPanel filters={filters} onFilterChange={setFilters} variant="mobile" tagData={tagData} />
+      <FilterPanel filters={filters} onFilterChange={setFilters} variant="mobile" tagData={tagData} personData={personData} />
 
       <main className="flex-1 overflow-y-auto p-4 md:p-6">
-        <Outlet context={{ filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility, tagData } satisfies LayoutOutletContext} />
+        <Outlet context={{ filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, tagData, personData } satisfies LayoutOutletContext} />
       </main>
     </div>
   );

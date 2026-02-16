@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
@@ -137,6 +139,39 @@ async def get_person(
         **PersonRead.model_validate(person).model_dump(),
         memory_count=memory_count,
     )
+
+
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9\-]+$")
+
+
+@router.get("/{person_id}/thumbnail")
+async def get_person_thumbnail(
+    person_id: str,
+    _session_id: str = Depends(require_auth),
+    session: Session = Depends(get_session),
+) -> Response:
+    if not _SAFE_ID_RE.match(person_id):
+        raise HTTPException(status_code=400, detail="Invalid person ID format")
+
+    person = session.get(Person, person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    if not person.face_thumbnail_path:
+        raise HTTPException(status_code=404, detail="No thumbnail available")
+
+    settings = get_settings()
+    thumb_path = (settings.data_dir / person.face_thumbnail_path).resolve()
+
+    # Guard against path traversal (e.g. face_thumbnail_path containing "../")
+    if not thumb_path.is_relative_to(settings.data_dir.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid thumbnail path")
+
+    if not thumb_path.is_file():
+        raise HTTPException(status_code=404, detail="Thumbnail file not found")
+
+    file_bytes = thumb_path.read_bytes()
+    return Response(content=file_bytes, media_type="image/jpeg")
 
 
 @router.put("/{person_id}", response_model=PersonRead)

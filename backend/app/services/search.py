@@ -66,6 +66,7 @@ class SearchService:
         top_k: int = DEFAULT_TOP_K,
         content_type: str | None = None,
         tag_ids: list[str] | None = None,
+        person_ids: list[str] | None = None,
     ) -> SearchResult:
         """Execute a fused search query.
 
@@ -102,6 +103,16 @@ class SearchService:
                 for mid, score in vector_hits.items()
                 if mid in self._filter_by_tags(set(vector_hits.keys()), tag_ids, session)
             }
+
+        # --- Filter by person_ids (post-filter on all hit sets) ---
+        if person_ids:
+            allowed_mids = self._filter_by_persons(
+                set(keyword_hits.keys()) | set(vector_hits.keys()),
+                person_ids,
+                session,
+            )
+            keyword_hits = {mid: s for mid, s in keyword_hits.items() if mid in allowed_mids}
+            vector_hits = {mid: s for mid, s in vector_hits.items() if mid in allowed_mids}
 
         # --- Fuse results ---
         fused = self._fuse_scores(keyword_hits, vector_hits, query_token_count)
@@ -214,6 +225,35 @@ class SearchService:
             AND tag_id IN ({tag_placeholders})
             GROUP BY memory_id
             HAVING COUNT(DISTINCT tag_id) = :tag_count
+        """
+
+        result = session.exec(text(sql).bindparams(**params))
+        return {row[0] for row in result}
+
+    def _filter_by_persons(
+        self, memory_ids: set[str], person_ids: list[str], session: Session
+    ) -> set[str]:
+        """Filter a set of memory IDs to only those linked to ALL specified persons."""
+        if not memory_ids or not person_ids:
+            return memory_ids
+
+        mid_placeholders = ", ".join(f":mid_{i}" for i in range(len(memory_ids)))
+        pid_placeholders = ", ".join(f":pid_{i}" for i in range(len(person_ids)))
+
+        params: dict[str, str | int] = {}
+        for i, mid in enumerate(memory_ids):
+            params[f"mid_{i}"] = mid
+        for i, pid in enumerate(person_ids):
+            params[f"pid_{i}"] = pid
+        params["person_count"] = len(person_ids)
+
+        sql = f"""
+            SELECT memory_id
+            FROM memory_persons
+            WHERE memory_id IN ({mid_placeholders})
+            AND person_id IN ({pid_placeholders})
+            GROUP BY memory_id
+            HAVING COUNT(DISTINCT person_id) = :person_count
         """
 
         result = session.exec(text(sql).bindparams(**params))

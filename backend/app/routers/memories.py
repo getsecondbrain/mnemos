@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.db import get_session
 from app.dependencies import get_encryption_service, get_llm_service, get_vault_service, require_auth
 from app.models.memory import Memory, MemoryCreate, MemoryRead, MemoryTagInfo, MemoryUpdate
+from app.models.person import MemoryPerson
 from app.models.reflection import ReflectionPrompt
 from app.models.source import Source
 from app.models.tag import MemoryTag, Tag
@@ -320,6 +321,7 @@ async def list_memories(
     limit: int = Query(50, ge=1, le=200),
     content_type: str | None = None,
     tag_ids: list[str] | None = Query(None, description="Filter by tag IDs (AND logic)"),
+    person_ids: list[str] | None = Query(None, description="Filter by person IDs (AND logic)"),
     year: int | None = Query(None, description="Filter by captured_at year"),
     order_by: str = Query("captured_at", description="Sort field: captured_at or created_at"),
     visibility: Literal["public", "private", "all"] = Query("public", description="Filter: public, private, or all"),
@@ -374,6 +376,14 @@ async def list_memories(
             .group_by(Memory.id)  # type: ignore[arg-type]
             .having(func.count(func.distinct(MemoryTag.tag_id)) == len(tag_ids))
         )
+    if person_ids:
+        person_subq = (
+            select(MemoryPerson.memory_id)
+            .where(MemoryPerson.person_id.in_(person_ids))  # type: ignore[union-attr]
+            .group_by(MemoryPerson.memory_id)
+            .having(func.count(func.distinct(MemoryPerson.person_id)) == len(person_ids))
+        )
+        statement = statement.where(Memory.id.in_(person_subq))  # type: ignore[arg-type]
     statement = statement.offset(skip).limit(limit)
     memories = list(session.exec(statement).all())
     return _attach_tags(memories, session)

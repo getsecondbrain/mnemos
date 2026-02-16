@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { searchMemories, getMemory, listTags } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
+import { useLayoutFilters } from "./Layout";
 import type { SearchHit, Memory, Tag } from "../types";
 
 type SearchMode = "hybrid" | "keyword" | "semantic";
@@ -32,6 +33,7 @@ export default function Search() {
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const { decrypt } = useEncryption();
+  const { filters } = useLayoutFilters();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const decryptTitle = useCallback(
@@ -76,6 +78,7 @@ export default function Search() {
           mode,
           content_type: contentType || undefined,
           tag_ids: selectedTagIds.length > 0 ? selectedTagIds : undefined,
+          person_ids: filters.personIds.length > 0 ? filters.personIds : undefined,
           top_k: 20,
         });
         setTotalHits(resp.total);
@@ -104,7 +107,7 @@ export default function Search() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [query, mode, contentType, selectedTagIds, decryptTitle]);
+  }, [query, mode, contentType, selectedTagIds, filters.personIds, decryptTitle]);
 
   const modes: { value: SearchMode; label: string }[] = [
     { value: "hybrid", label: "Hybrid" },

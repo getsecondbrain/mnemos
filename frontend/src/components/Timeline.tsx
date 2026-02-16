@@ -4,7 +4,7 @@ import { listMemories, fetchVaultFile, getTimelineStats, deleteMemory, updateMem
 import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
-import type { Memory, Tag } from "../types";
+import type { Memory, Tag, Person } from "../types";
 import QuickCapture from "./QuickCapture";
 import MemoryCardMenu from "./MemoryCardMenu";
 import ConfirmModal from "./ConfirmModal";
@@ -180,9 +180,11 @@ function formatChipDate(isoDate: string): string {
 function ActiveFilterChips({
   filters,
   tagData,
+  personData,
   onRemoveContentType,
   onRemoveDateRange,
   onRemoveTag,
+  onRemovePerson,
   onResetVisibility,
   onClearAll,
   selectedYear,
@@ -190,9 +192,11 @@ function ActiveFilterChips({
 }: {
   filters: FilterState;
   tagData: { tags: Tag[] };
+  personData: { persons: Person[] };
   onRemoveContentType: (ct: string) => void;
   onRemoveDateRange: () => void;
   onRemoveTag: (tagId: string) => void;
+  onRemovePerson: (personId: string) => void;
   onResetVisibility: () => void;
   onClearAll: () => void;
   selectedYear: number | null;
@@ -200,6 +204,7 @@ function ActiveFilterChips({
 }) {
   // Build a lookup map for tag names
   const tagNameMap = new Map(tagData.tags.map(t => [t.id, t.name]));
+  const personNameMap = new Map(personData.persons.map(p => [p.id, p.name]));
 
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -234,6 +239,14 @@ function ActiveFilterChips({
         </span>
       ))}
 
+      {/* Person chips */}
+      {filters.personIds.map((pid) => (
+        <span key={`person-${pid}`} className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
+          Person: {personNameMap.get(pid) || pid.slice(0, 8)}
+          <button onClick={() => onRemovePerson(pid)} className="text-gray-500 hover:text-gray-200 ml-0.5" aria-label="Remove person filter">&times;</button>
+        </span>
+      ))}
+
       {/* Visibility chip (only when non-default) */}
       {filters.visibility !== "public" && (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
@@ -262,7 +275,7 @@ export default function Timeline() {
   const [deleting, setDeleting] = useState(false);
 
   // All filter state from Layout's single useFilterSearchParams (via outlet context)
-  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility, tagData } = useLayoutFilters();
+  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, tagData, personData } = useLayoutFilters();
 
   // Derive selectedYear from date_from/date_to if they represent a full calendar year
   const selectedYear = useMemo(() => {
@@ -337,7 +350,7 @@ export default function Timeline() {
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.contentTypes.join(","), filters.dateFrom, filters.dateTo, filters.tagIds.join(","), filters.visibility]);
+  }, [filters.contentTypes.join(","), filters.dateFrom, filters.dateTo, filters.tagIds.join(","), filters.personIds.join(","), filters.visibility]);
 
   async function loadInitial(options?: { background?: boolean }) {
     // Cancel any in-flight loadInitial request to prevent race conditions
@@ -359,6 +372,7 @@ export default function Timeline() {
         limit: PAGE_SIZE,
         content_type: filters.contentTypes.length > 0 ? filters.contentTypes.join(",") : undefined,
         tag_ids: filters.tagIds.length > 0 ? filters.tagIds : undefined,
+        person_ids: filters.personIds.length > 0 ? filters.personIds : undefined,
         date_from: filters.dateFrom ?? undefined,
         date_to: filters.dateTo ?? undefined,
         order_by: "captured_at",
@@ -434,6 +448,7 @@ export default function Timeline() {
         limit: PAGE_SIZE,
         content_type: filters.contentTypes.length > 0 ? filters.contentTypes.join(",") : undefined,
         tag_ids: filters.tagIds.length > 0 ? filters.tagIds : undefined,
+        person_ids: filters.personIds.length > 0 ? filters.personIds : undefined,
         date_from: filters.dateFrom ?? undefined,
         date_to: filters.dateTo ?? undefined,
         order_by: "captured_at",
@@ -603,9 +618,11 @@ export default function Timeline() {
         <ActiveFilterChips
           filters={filters}
           tagData={tagData}
+          personData={personData}
           onRemoveContentType={removeContentType}
           onRemoveDateRange={removeDateRange}
           onRemoveTag={removeTagId}
+          onRemovePerson={removePersonId}
           onResetVisibility={resetVisibility}
           onClearAll={clearAllFilters}
           selectedYear={selectedYear}

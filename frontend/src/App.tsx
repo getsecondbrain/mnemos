@@ -12,6 +12,7 @@ import Graph from "./components/Graph";
 import Heartbeat from "./components/Heartbeat";
 import Testament from "./components/Testament";
 import Settings from "./components/Settings";
+import People from "./components/People";
 
 function AppRoutes() {
   const auth = useAuthContext();
@@ -42,6 +43,7 @@ function AppRoutes() {
           <Route path="/capture" element={<Capture />} />
           <Route path="/timeline" element={<Timeline />} />
           <Route path="/memory/:id" element={<MemoryDetail />} />
+          <Route path="/people" element={<People />} />
           <Route path="/search" element={<Search />} />
           <Route path="/chat" element={<Chat />} />
           <Route path="/graph" element={<Graph />} />
