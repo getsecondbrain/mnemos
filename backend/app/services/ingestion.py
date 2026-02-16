@@ -7,11 +7,14 @@ and vault storage.
 
 from __future__ import annotations
 
+import io
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
+from PIL import Image
+from PIL.ExifTags import Base as ExifTags, GPS as GPSTags
 from readability import Document as ReadabilityDocument
 
 from app.config import get_settings
@@ -56,6 +59,10 @@ class IngestionResult:
 
     # Text extract from non-text files (e.g., DOCX → markdown)
     text_extract_envelope: EncryptedEnvelope | None = None
+
+    # GPS location extracted from EXIF (photos only)
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +110,12 @@ class IngestionService:
 
         # 1. Detect content type
         mime_type, content_type = self._detect_content_type(file_data, filename)
+
+        # Extract GPS coordinates from EXIF (photos only)
+        latitude: float | None = None
+        longitude: float | None = None
+        if content_type == "photo":
+            latitude, longitude = self._extract_gps_from_exif(file_data)
 
         # 2. Preserve to archival format
         try:
@@ -154,6 +167,8 @@ class IngestionService:
             content_envelope=None,
             search_tokens=search_tokens,
             text_extract_envelope=text_extract_envelope,
+            latitude=latitude,
+            longitude=longitude,
         )
 
     async def ingest_text(
@@ -262,6 +277,66 @@ class IngestionService:
             search_tokens=search_tokens,
             text_extract_envelope=None,
         )
+
+    @staticmethod
+    def _extract_gps_from_exif(file_data: bytes) -> tuple[float | None, float | None]:
+        """Extract GPS latitude and longitude from EXIF data.
+
+        Returns (latitude, longitude) as decimal degrees, or (None, None)
+        if no GPS data is found or the image cannot be read.
+
+        Uses Pillow's Image.getexif() and the GPSInfo IFD tag.
+        """
+        try:
+            with Image.open(io.BytesIO(file_data)) as img:
+                exif = img.getexif()
+                if not exif:
+                    return (None, None)
+
+                # GPS info is stored in a sub-IFD accessed via tag 0x8825 (ExifTags.GPSInfo)
+                gps_ifd = exif.get_ifd(ExifTags.GPSInfo)
+                if not gps_ifd:
+                    return (None, None)
+
+                # Required tags: GPSLatitude (2), GPSLatitudeRef (1),
+                #                GPSLongitude (4), GPSLongitudeRef (3)
+                lat_data = gps_ifd.get(GPSTags.GPSLatitude)
+                lat_ref = gps_ifd.get(GPSTags.GPSLatitudeRef)
+                lon_data = gps_ifd.get(GPSTags.GPSLongitude)
+                lon_ref = gps_ifd.get(GPSTags.GPSLongitudeRef)
+
+                if (
+                    lat_data is None
+                    or lat_ref is None
+                    or lon_data is None
+                    or lon_ref is None
+                ):
+                    return (None, None)
+
+                def _dms_to_decimal(dms: tuple, ref: str) -> float:
+                    """Convert degrees/minutes/seconds to decimal degrees."""
+                    degrees = float(dms[0])
+                    minutes = float(dms[1])
+                    seconds = float(dms[2]) if len(dms) > 2 else 0.0
+                    decimal = degrees + minutes / 60.0 + seconds / 3600.0
+                    if ref in ("S", "W"):
+                        decimal = -decimal
+                    return decimal
+
+                latitude = _dms_to_decimal(lat_data, lat_ref)
+                longitude = _dms_to_decimal(lon_data, lon_ref)
+
+                # Validate coordinates are within valid ranges
+                if not (-90.0 <= latitude <= 90.0) or not (-180.0 <= longitude <= 180.0):
+                    logger.warning(
+                        "GPS coordinates out of range: lat=%s, lon=%s", latitude, longitude
+                    )
+                    return (None, None)
+
+                return (latitude, longitude)
+        except Exception:
+            logger.debug("Failed to extract GPS from EXIF", exc_info=True)
+            return (None, None)
 
     # -- internal helpers ----------------------------------------------------
 

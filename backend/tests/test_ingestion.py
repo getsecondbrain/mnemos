@@ -669,6 +669,18 @@ class TestIngestionEndToEnd:
         assert result.content_hash == hashlib.sha256(b"World").hexdigest()
 
     @pytest.mark.asyncio
+    async def test_ingest_text_has_no_coordinates(
+        self,
+        ingestion_service: IngestionService,
+    ) -> None:
+        """Text ingestion does not attempt GPS extraction."""
+        result = await ingestion_service.ingest_text(
+            title="Note", content="No GPS here"
+        )
+        assert result.latitude is None
+        assert result.longitude is None
+
+    @pytest.mark.asyncio
     async def test_ingest_file_encryption_is_real(
         self,
         ingestion_service: IngestionService,
@@ -692,3 +704,127 @@ class TestIngestionEndToEnd:
         other_vault = VaultService(vault_dir, other_identity)
         with pytest.raises(Exception):
             other_vault.retrieve_file(result.original_vault_path)
+
+
+# ---------------------------------------------------------------------------
+# EXIF GPS extraction tests
+# ---------------------------------------------------------------------------
+
+
+class TestExifGpsExtraction:
+    """EXIF GPS coordinate extraction from photo files."""
+
+    def test_extract_gps_from_jpeg_with_exif(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Extract GPS coords from a JPEG with EXIF GPS data."""
+        from PIL.ExifTags import Base as ExifTags, GPS as GPSTags
+
+        img = Image.new("RGB", (16, 16), color=(255, 0, 0))
+        exif = img.getexif()
+        gps_ifd = {
+            GPSTags.GPSLatitude: (40, 44, 55.2),    # 40°44'55.2"
+            GPSTags.GPSLatitudeRef: "N",
+            GPSTags.GPSLongitude: (73, 59, 10.8),    # 73°59'10.8"
+            GPSTags.GPSLongitudeRef: "W",
+        }
+        exif[ExifTags.GPSInfo] = gps_ifd
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif.tobytes())
+        jpeg_data = buf.getvalue()
+
+        lat, lon = ingestion_service._extract_gps_from_exif(jpeg_data)
+        assert lat is not None
+        assert lon is not None
+        assert abs(lat - 40.7487) < 0.01    # ~40.75°N
+        assert abs(lon - (-73.9863)) < 0.01  # ~73.99°W (negative for W)
+
+    def test_extract_gps_from_image_without_exif(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Returns (None, None) for images without EXIF data."""
+        png_data = _make_png_bytes()
+        lat, lon = ingestion_service._extract_gps_from_exif(png_data)
+        assert lat is None
+        assert lon is None
+
+    def test_extract_gps_from_non_image_data(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Returns (None, None) for non-image data (graceful failure)."""
+        lat, lon = ingestion_service._extract_gps_from_exif(b"not an image")
+        assert lat is None
+        assert lon is None
+
+    @pytest.mark.asyncio
+    async def test_ingest_photo_with_gps_sets_coordinates(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Ingesting a photo with GPS EXIF populates latitude/longitude."""
+        from PIL.ExifTags import Base as ExifTags, GPS as GPSTags
+
+        img = Image.new("RGB", (16, 16), color=(255, 0, 0))
+        exif = img.getexif()
+        gps_ifd = {
+            GPSTags.GPSLatitude: (48, 51, 24.0),    # Paris
+            GPSTags.GPSLatitudeRef: "N",
+            GPSTags.GPSLongitude: (2, 21, 7.0),
+            GPSTags.GPSLongitudeRef: "E",
+        }
+        exif[ExifTags.GPSInfo] = gps_ifd
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif.tobytes())
+        jpeg_data = buf.getvalue()
+
+        with patch("app.services.ingestion.detect_mime_type", return_value="image/jpeg"):
+            result = await ingestion_service.ingest_file(jpeg_data, "paris.jpg")
+
+        assert result.latitude is not None
+        assert result.longitude is not None
+        assert abs(result.latitude - 48.8567) < 0.01
+        assert abs(result.longitude - 2.3519) < 0.01
+
+    @pytest.mark.asyncio
+    async def test_ingest_photo_without_gps_has_none_coordinates(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Ingesting a photo without GPS EXIF has None latitude/longitude."""
+        jpeg_data = _make_jpeg_bytes()
+        with patch("app.services.ingestion.detect_mime_type", return_value="image/jpeg"):
+            result = await ingestion_service.ingest_file(jpeg_data, "no_gps.jpg")
+
+        assert result.latitude is None
+        assert result.longitude is None
+
+
+# ---------------------------------------------------------------------------
+# Location field validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestLocationFieldValidation:
+    def test_place_name_without_dek_raises(self):
+        """MemoryUpdate rejects place_name without place_name_dek."""
+        from app.models.memory import MemoryUpdate
+        with pytest.raises(ValueError, match="place_name and place_name_dek"):
+            MemoryUpdate(place_name="Paris")
+
+    def test_place_name_dek_without_name_raises(self):
+        """MemoryUpdate rejects place_name_dek without place_name."""
+        from app.models.memory import MemoryUpdate
+        with pytest.raises(ValueError, match="place_name and place_name_dek"):
+            MemoryUpdate(place_name_dek="deadbeef")
+
+    def test_both_place_name_fields_accepted(self):
+        """MemoryUpdate accepts place_name + place_name_dek together."""
+        from app.models.memory import MemoryUpdate
+        update = MemoryUpdate(place_name="abc", place_name_dek="def")
+        assert update.place_name == "abc"
+        assert update.place_name_dek == "def"
+
+    def test_neither_place_name_field_accepted(self):
+        """MemoryUpdate accepts neither place_name field."""
+        from app.models.memory import MemoryUpdate
+        update = MemoryUpdate(title="test")
+        assert update.place_name is None
+        assert update.place_name_dek is None

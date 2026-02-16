@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import CheckConstraint
 from sqlmodel import Field, SQLModel
 
@@ -50,6 +50,13 @@ class Memory(SQLModel, table=True):
     parent_id: str | None = Field(default=None, foreign_key="memories.id")
     source_id: str | None = Field(default=None, foreign_key="sources.id")
 
+    # Location (GPS coordinates are stored as plaintext floats;
+    # place_name is encrypted because it's user-identifiable text)
+    latitude: float | None = Field(default=None)
+    longitude: float | None = Field(default=None)
+    place_name: str | None = Field(default=None)       # encrypted ciphertext hex
+    place_name_dek: str | None = Field(default=None)    # encrypted DEK hex
+
 
 # --- Pydantic schemas for request/response validation ---
 
@@ -63,10 +70,24 @@ class MemoryCreate(BaseModel):
     metadata_json: str | None = None
     parent_id: str | None = None
     source_id: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    place_name: str | None = None
+    place_name_dek: str | None = None
     title_dek: str | None = None
     content_dek: str | None = None
     encryption_algo: str | None = None
     encryption_version: int | None = None
+
+    @model_validator(mode="after")
+    def validate_place_name_envelope(self) -> "MemoryCreate":
+        """place_name and place_name_dek must be set together or not at all."""
+        fields_set = self.model_fields_set
+        pn_set = "place_name" in fields_set
+        dek_set = "place_name_dek" in fields_set
+        if pn_set != dek_set:
+            raise ValueError("place_name and place_name_dek must be provided together")
+        return self
 
 
 class MemoryUpdate(BaseModel):
@@ -79,10 +100,24 @@ class MemoryUpdate(BaseModel):
     metadata_json: str | None = None
     parent_id: str | None = None
     source_id: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    place_name: str | None = None
+    place_name_dek: str | None = None
     title_dek: str | None = None
     content_dek: str | None = None
     encryption_algo: str | None = None
     encryption_version: int | None = None
+
+    @model_validator(mode="after")
+    def validate_place_name_envelope(self) -> "MemoryUpdate":
+        """place_name and place_name_dek must be set together or not at all."""
+        fields_set = self.model_fields_set
+        pn_set = "place_name" in fields_set
+        dek_set = "place_name_dek" in fields_set
+        if pn_set != dek_set:
+            raise ValueError("place_name and place_name_dek must be provided together")
+        return self
 
 
 class MemoryTagInfo(BaseModel):
@@ -106,6 +141,10 @@ class MemoryRead(BaseModel):
     git_commit: str | None
     parent_id: str | None
     source_id: str | None
+    latitude: float | None
+    longitude: float | None
+    place_name: str | None
+    place_name_dek: str | None
     title_dek: str | None
     content_dek: str | None
     encryption_algo: str

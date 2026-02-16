@@ -47,6 +47,19 @@ def _run_migrations(eng) -> None:
                 text("ALTER TABLE memories ADD COLUMN visibility TEXT DEFAULT 'public'")
             )
 
+    # Location fields (P12.1)
+    for col_name, col_def in [
+        ("latitude", "REAL"),
+        ("longitude", "REAL"),
+        ("place_name", "TEXT"),
+        ("place_name_dek", "TEXT"),
+    ]:
+        if col_name not in columns:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(f"ALTER TABLE memories ADD COLUMN {col_name} {col_def}")
+                )
+
 
 def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:

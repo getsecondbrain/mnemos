@@ -130,6 +130,8 @@ async def ingest_file(
         source_type="import",
         captured_at=parsed_captured_at or datetime.now(timezone.utc),
         content_hash=result.content_hash,
+        latitude=result.latitude,
+        longitude=result.longitude,
     )
     session.add(memory)
     session.flush()  # Get memory.id before creating Source

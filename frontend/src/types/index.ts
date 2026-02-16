@@ -13,6 +13,10 @@ export interface Memory {
   content_hash: string | null;
   parent_id: string | null;
   source_id: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  place_name: string | null;
+  place_name_dek: string | null;
   title_dek: string | null;
   content_dek: string | null;
   encryption_algo: string | null;
@@ -31,6 +35,10 @@ export interface MemoryCreate {
   metadata_json?: string;
   parent_id?: string;
   source_id?: string;
+  latitude?: number;
+  longitude?: number;
+  place_name?: string;
+  place_name_dek?: string;
   title_dek?: string;
   content_dek?: string;
   encryption_algo?: string;
@@ -48,6 +56,10 @@ export interface MemoryUpdate {
   metadata_json?: string;
   parent_id?: string;
   source_id?: string;
+  latitude?: number;
+  longitude?: number;
+  place_name?: string;
+  place_name_dek?: string;
   title_dek?: string;
   content_dek?: string;
   encryption_algo?: string;
