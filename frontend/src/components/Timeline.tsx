@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { listMemories, fetchVaultFile, getTimelineStats } from "../services/api";
 import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
@@ -170,8 +170,15 @@ export default function Timeline() {
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Read tag filter from URL params
+  const selectedTagId = searchParams.get("tag") || null;
+  const selectedTagName = searchParams.get("tagName") || null;
+
   const refreshInFlightRef = useRef(false);
   const mountedRef = useRef(true);
+  const loadInitialAbortRef = useRef<AbortController | null>(null);
+  const loadInitialInFlightRef = useRef(false);
   const { decrypt } = useEncryption();
 
   useEffect(() => {
@@ -226,9 +233,17 @@ export default function Timeline() {
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedYear]);
+  }, [selectedYear, selectedTagId]);
 
   async function loadInitial(options?: { background?: boolean }) {
+    // Cancel any in-flight loadInitial request to prevent race conditions
+    if (loadInitialAbortRef.current) {
+      loadInitialAbortRef.current.abort();
+    }
+    const abortController = new AbortController();
+    loadInitialAbortRef.current = abortController;
+    loadInitialInFlightRef.current = true;
+
     const isBackground = options?.background ?? false;
     if (!isBackground) {
       setLoading(true);
@@ -238,18 +253,22 @@ export default function Timeline() {
       const data = await listMemories({
         limit: PAGE_SIZE,
         year: selectedYear ?? undefined,
+        tag_ids: selectedTagId ? [selectedTagId] : undefined,
         order_by: "captured_at",
       });
-      if (!mountedRef.current) return;
+      if (abortController.signal.aborted || !mountedRef.current) return;
       const decrypted = await decryptMemories(data);
-      if (!mountedRef.current) return;
+      if (abortController.signal.aborted || !mountedRef.current) return;
       setMemories(decrypted);
       setHasMore(data.length >= PAGE_SIZE);
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (abortController.signal.aborted || !mountedRef.current) return;
       setError(err instanceof Error ? err.message : "Failed to load memories.");
     } finally {
-      if (!isBackground && mountedRef.current) {
+      if (loadInitialAbortRef.current === abortController) {
+        loadInitialInFlightRef.current = false;
+      }
+      if (!isBackground && mountedRef.current && !abortController.signal.aborted) {
         setLoading(false);
       }
     }
@@ -296,18 +315,25 @@ export default function Timeline() {
   }
 
   async function loadMore() {
+    // Don't start loadMore if loadInitial is in-flight — results would be for a stale filter
+    if (loadInitialInFlightRef.current) return;
     setLoadingMore(true);
     try {
       const data = await listMemories({
         skip: memories.length,
         limit: PAGE_SIZE,
         year: selectedYear ?? undefined,
+        tag_ids: selectedTagId ? [selectedTagId] : undefined,
         order_by: "captured_at",
       });
+      // If filters changed while we were fetching, discard the stale results
+      if (loadInitialInFlightRef.current) return;
       const decrypted = await decryptMemories(data);
+      if (loadInitialInFlightRef.current) return;
       setMemories((prev) => [...prev, ...decrypted]);
       setHasMore(data.length >= PAGE_SIZE);
     } catch (err) {
+      if (loadInitialInFlightRef.current) return;
       setError(err instanceof Error ? err.message : "Failed to load more memories.");
     } finally {
       setLoadingMore(false);
@@ -316,6 +342,15 @@ export default function Timeline() {
 
   function handleSelectYear(year: number | null) {
     setSelectedYear(year);
+  }
+
+  function handleClearTagFilter() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("tag");
+      next.delete("tagName");
+      return next;
+    });
   }
 
   if (loading) {
@@ -359,7 +394,7 @@ export default function Timeline() {
     );
   }
 
-  if (memories.length === 0 && !selectedYear) {
+  if (memories.length === 0 && !selectedYear && !selectedTagId) {
     return (
       <div className="py-6">
         <QuickCapture onMemoryCreated={handleRefresh} />
@@ -410,11 +445,25 @@ export default function Timeline() {
         />
       )}
 
+      {selectedTagId && (
+        <div className="mb-4 flex items-center gap-2 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-300">
+          <span>
+            Filtered by tag: <span className="font-medium text-gray-100">{selectedTagName || "selected tag"}</span>
+          </span>
+          <button
+            onClick={handleClearTagFilter}
+            className="ml-auto text-xs text-gray-400 hover:text-gray-200 underline"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       <QuickCapture onMemoryCreated={handleRefresh} />
 
       {memories.length === 0 ? (
         <p className="text-gray-500 text-center py-8">
-          No memories{selectedYear ? ` from ${selectedYear}` : ""}.
+          No memories{selectedYear ? ` from ${selectedYear}` : ""}{selectedTagId ? ` tagged "${selectedTagName || "selected tag"}"` : ""}.
         </p>
       ) : (
         <div className="space-y-4">
@@ -451,7 +500,31 @@ export default function Timeline() {
                         {memory.tags.slice(0, 3).map((tag) => (
                           <span
                             key={tag.tag_id}
-                            className="px-1.5 py-0.5 rounded text-[10px] font-medium text-white truncate max-w-[100px]"
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setSearchParams((prev) => {
+                                const next = new URLSearchParams(prev);
+                                next.set("tag", tag.tag_id);
+                                next.set("tagName", tag.tag_name);
+                                return next;
+                              });
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setSearchParams((prev) => {
+                                  const next = new URLSearchParams(prev);
+                                  next.set("tag", tag.tag_id);
+                                  next.set("tagName", tag.tag_name);
+                                  return next;
+                                });
+                              }
+                            }}
+                            className="px-1.5 py-0.5 rounded text-[10px] font-medium text-white truncate max-w-[100px] cursor-pointer hover:opacity-80 transition-opacity"
                             style={{ backgroundColor: tag.tag_color || "#4b5563" }}
                           >
                             {tag.tag_name}
