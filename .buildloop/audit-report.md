@@ -1,103 +1,72 @@
-# Audit Report — P9.3
+# Audit Report — P10.1
 
 ```json
 {
-  "high": [
-    {
-      "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 185,
-      "issue": "CONTENT_TYPES array lists 'file' and 'url' but the backend ingestion service never produces these content_type values. Backend uses 'document', 'webpage', 'video', and 'email' which are all missing from the filter. Users selecting 'File' or 'URL' will always get zero results; users cannot filter by 'document' or 'webpage' which are real content types in the database. The array should be: text, photo, document, voice, video, url/webpage, email — matching backend's _categorize_mime() output.",
-      "category": "logic"
-    },
-    {
-      "file": "frontend/src/components/Layout.tsx",
-      "line": 104,
-      "issue": "The mobile FilterPanel is rendered outside the sidebar nav, meaning it appears on ALL routes (Capture, Search, Chat, Graph, Settings, etc.), not just Timeline. Changing a filter on the /chat page modifies URL search params that have no effect on Chat but will confuse the user and pollute the URL. The FilterPanel should only render when on a route that consumes filters (e.g., /timeline), or the mobile trigger should be conditionally shown.",
-      "category": "logic"
-    }
-  ],
+  "high": [],
   "medium": [
     {
-      "file": "frontend/src/components/Layout.tsx",
-      "line": 34,
-      "issue": "useFilterSearchParams() is called unconditionally in Layout, which calls useSearchParams() on every route. This means every navigation to any page reads/writes URL search params intended only for Timeline filtering. Filter params will persist in the URL when navigating away from /timeline (e.g., /settings?content_type=photo), creating a confusing UX. The hook should either be scoped to Timeline's route, or the Outlet context approach should clear stale params on route change.",
+      "file": "backend/app/models/suggestion.py",
+      "line": 39,
+      "issue": "Suggestion.memory_id is NOT nullable, but suggestion_type 'digest' and 'pattern' (per P10.3/P10.5) may need to represent suggestions that span multiple memories or are global (e.g., a weekly digest). When P10.3 tries to create a digest Suggestion without a single owning memory, it will hit a NOT NULL constraint violation. Consider making memory_id nullable or documenting that digest/pattern suggestions must be associated with a specific memory.",
       "category": "logic"
     },
     {
-      "file": "frontend/src/components/Timeline.tsx",
-      "line": 339,
-      "issue": "useEffect dependency array uses filters.contentTypes.join(',') and filters.tagIds.join(',') which are computed inline. While this avoids reference-equality issues, React's exhaustive-deps lint rule is suppressed. If tagIds contains values with commas (unlikely for UUIDs but possible for malformed input), the join would produce ambiguous results (e.g., ['a,b','c'] and ['a','b,c'] both join to 'a,b,c'), causing the effect to not re-fire when it should.",
+      "file": "backend/app/services/loop_scheduler.py",
+      "line": 63,
+      "issue": "mark_started() silently returns without logging an error or raising when the LoopState row is not found (state is None at line 75). If the loop_state row was deleted externally (e.g., manual DB edit) between check_due() and mark_started(), the next_run_at is never updated and check_due() will return this loop_name every cycle, causing unbounded job submissions every 5 minutes.",
       "category": "logic"
     },
     {
-      "file": "frontend/src/components/Layout.tsx",
-      "line": 90,
-      "issue": "The desktop sidebar FilterPanel is always visible but only meaningful on the Timeline page. On other pages (/chat, /graph, /settings), users see filter controls that do nothing, which is misleading. Consider hiding the filter panel or showing a message when not on a filterable route.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "frontend/src/components/Timeline.tsx",
-      "line": 264,
-      "issue": "useLayoutFilters() calls useOutletContext() which will throw or return undefined if Timeline is ever rendered outside Layout's Outlet (e.g., in tests or a different route configuration). There is no null check or fallback. This is fragile — a missing context will crash the component.",
-      "category": "crash"
-    },
-    {
-      "file": "frontend/src/components/Timeline.tsx",
-      "line": 170,
-      "issue": "formatChipDate splits on '-' and accesses parts[1] and parts[2] but doesn't validate the input format. If dateFrom/dateTo is an invalid or partial string (e.g., '2024' or '2024-01'), parseInt of undefined will produce NaN, and the months array lookup will return undefined, displaying 'undefined NaN, 2024' in the chip.",
+      "file": "backend/app/main.py",
+      "line": 148,
+      "issue": "If a single loop_name fails in the for-loop (e.g., mark_started throws an unexpected DB error), the remaining due loops in that cycle are skipped. The outer try/except at line 162 catches it, but the loops that were due but not yet processed won't be retried until the next 300s cycle. This is acceptable for 6-168 hour intervals but could cause up to 5 minutes of scheduling drift.",
       "category": "error-handling"
     },
     {
-      "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 91,
-      "issue": "Legacy ?tag= param is read and merged into tagIds during URL parsing, but setFilters only clears legacy params when explicitly called. If the user just navigates to /timeline?tag=X and never interacts with filters, the legacy params persist in the URL indefinitely. They'll only be cleaned up on the next filter interaction, not on initial load.",
-      "category": "inconsistency"
+      "file": "backend/app/worker.py",
+      "line": 910,
+      "issue": "Stub handlers (_process_tag_suggest_loop, _process_enrich_prompt_loop, _process_connection_rescan, _process_digest) have no try/except around _persist_job calls. If the DB is temporarily locked or the first _persist_job succeeds but the second fails, the job gets stuck in PROCESSING state permanently (until recover_incomplete_jobs on next restart). Existing non-stub handlers (e.g., _process_heartbeat_check) have full try/except with retry logic.",
+      "category": "error-handling"
     }
   ],
   "low": [
     {
-      "file": "frontend/src/components/Timeline.tsx",
-      "line": 611,
-      "issue": "onClearYear callback creates a new inline closure on every render: () => setFilters({ ...filters, dateFrom: null, dateTo: null }). This is functionally identical to removeDateRange but bypasses the useCallback optimization. Should just use removeDateRange for consistency and to avoid unnecessary re-renders of ActiveFilterChips.",
+      "file": "backend/app/worker.py",
+      "line": 934,
+      "issue": "Docstring says 'Logic added in P10.2' but per IMPL_PLAN.md, ENRICH_PROMPT logic is added in P10.3, not P10.2. Same issue on line 957 (_process_connection_rescan says P10.3 — correct) and line 979 (_process_digest says P10.3 — correct).",
       "category": "inconsistency"
     },
     {
-      "file": "frontend/src/components/Layout.tsx",
-      "line": 5,
-      "issue": "FilterState and TagData types are imported but FilterState is only used in the LayoutOutletContext interface (re-exported from FilterPanel). TagData is used for the same purpose. These could be removed from the import and instead just referenced from FilterPanel's export in the interface definition, but this is minor.",
+      "file": "backend/app/models/suggestion.py",
+      "line": 43,
+      "issue": "Plan's 'Key decisions' section said 'No encryption_algo/encryption_version on Suggestion', but the implementation correctly added them (lines 43-44). This is better than the plan — follows the project's crypto-agility convention. Not a bug, just a plan/implementation divergence worth noting.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "backend/app/models/suggestion.py",
+      "line": 47,
+      "issue": "updated_at default_factory creates the timestamp at row creation but is never automatically updated on subsequent modifications. When P10.4 implements accept/dismiss endpoints, they must explicitly set updated_at = datetime.now(timezone.utc) or the field will show creation time, not last-modified time. This is consistent with the Memory model's pattern but worth noting for future implementers.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "backend/app/services/loop_scheduler.py",
+      "line": 26,
+      "issue": "The engine parameter has no type annotation (should be sqlalchemy.engine.Engine). Minor type safety gap — all other typed params in the codebase use type hints per CLAUDE.md conventions.",
       "category": "style"
-    },
-    {
-      "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 14,
-      "issue": "EMPTY_FILTERS is still exported but no longer used outside of FilterPanel.tsx (the plan says to keep it as the 'cleared' state, but freshEmptyFilters() is used internally instead). This is dead code that may confuse future developers.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "frontend/src/components/Timeline.tsx",
-      "line": 357,
-      "issue": "The loadInitial function still doesn't pass the AbortController signal to the fetch call (listMemories doesn't accept AbortSignal). While the component checks abortController.signal.aborted after await, the actual HTTP request is not cancelled — it completes in the background, wasting bandwidth. This is a pre-existing issue, not introduced by P9.3.",
-      "category": "inconsistency"
     }
   ],
   "validated": [
-    "FilterState type definition matches between FilterPanel, Layout outlet context, and Timeline consumer — no type mismatches",
-    "useFilterSearchParams correctly derives filter state from URL params via useMemo with searchParams dependency",
-    "setFilters correctly serializes all filter fields to URL params and cleans up legacy tag/tagName params",
-    "Granular removers (removeContentType, removeTagId, removeDateRange, resetVisibility) use setSearchParams functional updater to avoid stale closure races — properly implemented",
-    "selectedYear derivation via useMemo correctly identifies full calendar year ranges (YYYY-01-01 to YYYY-12-31) and returns null for partial ranges",
-    "handleSelectYear correctly sets date_from/date_to params for year selection and clears both on deselect",
-    "API contract between frontend listMemories() and backend list_memories() is correct — content_type (comma-separated), tag_ids (appended individually), date_from, date_to, visibility all match",
-    "Backend properly handles date_from as >= and date_to with inclusive-day heuristic (date-only strings get +1 day with < comparison), matching frontend's YYYY-MM-DD format",
-    "ActiveFilterChips correctly builds tag name lookup map from tagData and falls back to truncated ID for unknown tags",
-    "Tag chip click handler on memory cards correctly checks for duplicate tag IDs before adding to filter",
-    "loadMore correctly uses filterGenerationRef to discard stale results when filters change during fetch",
-    "OnThisDay carousel correctly hidden when any filter is active via isFilterEmpty check",
-    "Empty state correctly shows 'No memories match the current filters' when filters are active and results are empty, vs the onboarding message when no filters are active",
-    "Visibility filter correctly omits 'public' from URL (default value) to keep URLs clean",
-    "refreshStats correctly depends on filters.visibility to refetch stats when visibility changes",
-    "Layout passes filter state through Outlet context, and Timeline consumes it via useLayoutFilters() — single source of truth pattern is correct",
-    "parseVisibility helper validates against a Set of known values and falls back to 'public' — prevents invalid URL param injection"
+    "LoopScheduler._intervals keys exactly match JobType enum values (tag_suggest, enrich_prompt, connection_rescan, digest) — the JobType(loop_name) cast in main.py line 150 will always succeed for known loops",
+    "LoopState and Suggestion models are correctly imported in models/__init__.py, ensuring SQLModel.metadata.create_all() creates both tables",
+    "Config settings (tag_suggest_interval_hours, enrich_interval_hours, connection_rescan_interval_hours, digest_interval_hours) added with correct defaults matching IMPL_PLAN.md spec",
+    "Scheduler async task in main.py has proper 120s initial delay, proper cancellation on shutdown, and correct exception handling that prevents the loop from dying on transient errors",
+    "Memory deletion in routers/memories.py correctly cascades to 'suggestions' table (line 482), preventing orphaned Suggestion rows when a memory is deleted",
+    "LoopScheduler uses short-lived Session objects (one per call), no long-lived DB sessions that could cause SQLite locking issues",
+    "Worker stub handlers follow the same payload.pop('_job_id') pattern as existing handlers, ensuring retry metadata is correctly extracted",
+    "Suggestion model has CheckConstraints matching the enum values for both suggestion_type and status, preventing invalid data at the DB level",
+    "Suggestion model FK on memory_id is indexed (index=True), which is correct for the join patterns P10.4 will use",
+    "LoopScheduler.initialize() is idempotent — it only inserts rows that don't already exist, so repeated startups don't reset next_run_at",
+    "The scheduler check interval (300s) is appropriate for loop intervals ranging from 6 to 168 hours — maximum scheduling drift is ~5 minutes which is negligible"
   ]
 }
 ```

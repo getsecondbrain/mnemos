@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     vault_integrity_sample_pct: float = 0.1  # Fraction of files to hash-verify (0.0-1.0)
     # OCR settings
     ocr_enabled: bool = True  # Set to False if tesseract is not installed
+    # Background AI loop intervals
+    tag_suggest_interval_hours: int = 24
+    enrich_interval_hours: int = 24
+    connection_rescan_interval_hours: int = 6
+    digest_interval_hours: int = 168  # Weekly
+
     # Backup settings
     restic_password: str = ""
     restic_repository_local: str = ""

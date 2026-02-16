@@ -40,6 +40,10 @@ class JobType(str, Enum):
     INGEST = "ingest"  # Post-ingest: embed + tokens + connections
     HEARTBEAT_CHECK = "heartbeat_check"  # Periodic heartbeat deadline check
     VAULT_INTEGRITY = "vault_integrity"  # Daily vault integrity verification
+    TAG_SUGGEST = "tag_suggest"  # Background tag suggestion loop
+    ENRICH_PROMPT = "enrich_prompt"  # Background enrichment prompt loop
+    CONNECTION_RESCAN = "connection_rescan"  # Periodic connection re-scan
+    DIGEST = "digest"  # Weekly digest generation
 
 
 @dataclass
@@ -237,6 +241,14 @@ class BackgroundWorker:
             self._process_heartbeat_check(job.payload)
         elif job.job_type == JobType.VAULT_INTEGRITY:
             self._process_vault_integrity(job.payload)
+        elif job.job_type == JobType.TAG_SUGGEST:
+            self._process_tag_suggest_loop(job.payload)
+        elif job.job_type == JobType.ENRICH_PROMPT:
+            self._process_enrich_prompt_loop(job.payload)
+        elif job.job_type == JobType.CONNECTION_RESCAN:
+            self._process_connection_rescan(job.payload)
+        elif job.job_type == JobType.DIGEST:
+            self._process_digest(job.payload)
         else:
             logger.warning("Unknown job type: %s", job.job_type)
 
@@ -894,3 +906,95 @@ class BackgroundWorker:
                     )
         except Exception:
             logger.exception("Error recovering incomplete jobs")
+
+    def _process_tag_suggest_loop(self, payload: dict) -> None:
+        """Handle TAG_SUGGEST loop job. (Logic added in P10.2)"""
+        job_id = payload.pop("_job_id", None)
+        attempt = payload.pop("_attempt", 1)
+        max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
+
+        job_id = self._persist_job(
+            job_type=JobType.TAG_SUGGEST.value,
+            payload=payload,
+            status=JobStatus.PROCESSING.value,
+            attempt=attempt, max_attempts=max_attempts, job_id=job_id,
+        )
+
+        logger.info("TAG_SUGGEST loop job processed (no-op, logic in P10.2)")
+
+        self._persist_job(
+            job_type=JobType.TAG_SUGGEST.value,
+            payload=payload,
+            status=JobStatus.SUCCEEDED.value,
+            attempt=attempt, max_attempts=max_attempts,
+            completed_at=datetime.now(timezone.utc), job_id=job_id,
+        )
+
+    def _process_enrich_prompt_loop(self, payload: dict) -> None:
+        """Handle ENRICH_PROMPT loop job. (Logic added in P10.2)"""
+        job_id = payload.pop("_job_id", None)
+        attempt = payload.pop("_attempt", 1)
+        max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
+
+        job_id = self._persist_job(
+            job_type=JobType.ENRICH_PROMPT.value,
+            payload=payload,
+            status=JobStatus.PROCESSING.value,
+            attempt=attempt, max_attempts=max_attempts, job_id=job_id,
+        )
+
+        logger.info("ENRICH_PROMPT loop job processed (no-op, logic in P10.2)")
+
+        self._persist_job(
+            job_type=JobType.ENRICH_PROMPT.value,
+            payload=payload,
+            status=JobStatus.SUCCEEDED.value,
+            attempt=attempt, max_attempts=max_attempts,
+            completed_at=datetime.now(timezone.utc), job_id=job_id,
+        )
+
+    def _process_connection_rescan(self, payload: dict) -> None:
+        """Handle CONNECTION_RESCAN loop job. (Logic added in P10.3)"""
+        job_id = payload.pop("_job_id", None)
+        attempt = payload.pop("_attempt", 1)
+        max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
+
+        job_id = self._persist_job(
+            job_type=JobType.CONNECTION_RESCAN.value,
+            payload=payload,
+            status=JobStatus.PROCESSING.value,
+            attempt=attempt, max_attempts=max_attempts, job_id=job_id,
+        )
+
+        logger.info("CONNECTION_RESCAN loop job processed (no-op, logic in P10.3)")
+
+        self._persist_job(
+            job_type=JobType.CONNECTION_RESCAN.value,
+            payload=payload,
+            status=JobStatus.SUCCEEDED.value,
+            attempt=attempt, max_attempts=max_attempts,
+            completed_at=datetime.now(timezone.utc), job_id=job_id,
+        )
+
+    def _process_digest(self, payload: dict) -> None:
+        """Handle DIGEST loop job. (Logic added in P10.3)"""
+        job_id = payload.pop("_job_id", None)
+        attempt = payload.pop("_attempt", 1)
+        max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
+
+        job_id = self._persist_job(
+            job_type=JobType.DIGEST.value,
+            payload=payload,
+            status=JobStatus.PROCESSING.value,
+            attempt=attempt, max_attempts=max_attempts, job_id=job_id,
+        )
+
+        logger.info("DIGEST loop job processed (no-op, logic in P10.3)")
+
+        self._persist_job(
+            job_type=JobType.DIGEST.value,
+            payload=payload,
+            status=JobStatus.SUCCEEDED.value,
+            attempt=attempt, max_attempts=max_attempts,
+            completed_at=datetime.now(timezone.utc), job_id=job_id,
+        )

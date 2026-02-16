@@ -70,6 +70,17 @@ async def lifespan(app: FastAPI):
         worker.recover_incomplete_jobs()
         app.state.worker = worker
 
+        # Initialize loop scheduler for background AI jobs
+        # Inside the Qdrant try/except because scheduled loops need the worker
+        # to submit jobs; initializing without a worker would create stale
+        # next_run_at entries that burst-fire on recovery.
+        from app.services.loop_scheduler import LoopScheduler
+        from app.db import engine as db_engine
+
+        loop_scheduler = LoopScheduler(settings)
+        loop_scheduler.initialize(db_engine)
+        app.state.loop_scheduler = loop_scheduler
+
     except Exception:
         logging.getLogger(__name__).warning(
             "Failed to initialize Qdrant/Embedding service — AI features unavailable until Qdrant is reachable",
@@ -123,6 +134,39 @@ async def lifespan(app: FastAPI):
 
     vault_check_task = asyncio.create_task(_vault_integrity_loop())
 
+    # Start periodic loop scheduler check
+    async def _loop_scheduler_check() -> None:
+        """Periodically check if any AI loops are due and submit jobs."""
+        await asyncio.sleep(120)
+        while True:
+            try:
+                if hasattr(app.state, "worker") and hasattr(app.state, "loop_scheduler"):
+                    from app.db import engine as db_engine
+                    from app.worker import Job, JobType
+
+                    due_loops = app.state.loop_scheduler.check_due(db_engine)
+                    for loop_name in due_loops:
+                        try:
+                            job_type = JobType(loop_name)
+                            app.state.worker.submit_job(
+                                Job(job_type=job_type, payload={})
+                            )
+                            app.state.loop_scheduler.mark_started(db_engine, loop_name)
+                            logging.getLogger(__name__).info(
+                                "Submitted scheduled loop job: %s", loop_name
+                            )
+                        except ValueError:
+                            logging.getLogger(__name__).warning(
+                                "Unknown loop name from scheduler: %s", loop_name
+                            )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Error in loop scheduler check"
+                )
+            await asyncio.sleep(300)
+
+    scheduler_task = asyncio.create_task(_loop_scheduler_check())
+
     yield
 
     # Shutdown: cancel session sweep
@@ -135,6 +179,12 @@ async def lifespan(app: FastAPI):
     vault_check_task.cancel()
     try:
         await vault_check_task
+    except asyncio.CancelledError:
+        pass
+    # Shutdown: cancel loop scheduler check
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
     except asyncio.CancelledError:
         pass
     # Shutdown: stop background worker

@@ -11,3 +11,4 @@ from app.models.job import BackgroundJob  # noqa: F401
 from app.models.tag import Tag, MemoryTag  # noqa: F401
 from app.models.backup import BackupRecord  # noqa: F401
 from app.models.reflection import ReflectionPrompt  # noqa: F401
+from app.models.suggestion import Suggestion, LoopState  # noqa: F401
