@@ -9,13 +9,17 @@ from sqlmodel import Session, func, select
 
 from app.config import get_settings
 from app.db import get_session
-from app.dependencies import get_encryption_service, get_vault_service, require_auth
+from app.dependencies import get_encryption_service, get_llm_service, get_vault_service, require_auth
 from app.models.memory import Memory, MemoryCreate, MemoryRead, MemoryTagInfo, MemoryUpdate
+from app.models.reflection import ReflectionPrompt
 from app.models.source import Source
 from app.models.tag import MemoryTag, Tag
 from app.services.encryption import EncryptedEnvelope, EncryptionService
 from app.services.git_ops import GitOpsService
+from app.services.llm import LLMError, LLMService
 from app.services.vault import VaultService
+
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +211,109 @@ async def on_this_day(
     return _attach_tags(memories, session)
 
 
+@router.get("/{memory_id}/reflect")
+async def reflect_on_memory(
+    memory_id: str,
+    _session_id: str = Depends(require_auth),
+    enc: EncryptionService = Depends(get_encryption_service),
+    llm: LLMService = Depends(get_llm_service),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Generate a short LLM reflection prompt for a memory.
+
+    Returns a cached result if one exists and is less than 24 hours old.
+    Falls back gracefully — returns 503 if LLM is unavailable.
+    """
+    from datetime import timedelta
+
+    # 1. Check memory exists
+    memory = session.get(Memory, memory_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    # 2. Refuse to send decrypted content to a cloud fallback endpoint.
+    #    Check BEFORE decryption to avoid producing plaintext unnecessarily.
+    if llm.has_fallback:
+        logger.warning(
+            "Reflect endpoint blocked: cloud LLM fallback is configured. "
+            "Decrypted content will not be sent to a third-party API."
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Reflection generation unavailable",
+        )
+
+    # 3. Check cache (24-hour TTL)
+    cached = session.exec(
+        select(ReflectionPrompt).where(ReflectionPrompt.memory_id == memory_id)
+    ).first()
+
+    now = datetime.now(timezone.utc)
+    if cached:
+        # SQLite stores datetimes without tzinfo; treat as UTC for comparison
+        cached_at = cached.generated_at.replace(tzinfo=timezone.utc) if cached.generated_at.tzinfo is None else cached.generated_at
+        if (now - cached_at) < timedelta(hours=24):
+            return {"prompt": cached.prompt_text}
+
+    # 4. Decrypt memory content
+    if memory.content_dek:
+        try:
+            plaintext = enc.decrypt(EncryptedEnvelope(
+                ciphertext=bytes.fromhex(memory.content),
+                encrypted_dek=bytes.fromhex(memory.content_dek),
+                algo=memory.encryption_algo,
+                version=memory.encryption_version,
+            )).decode("utf-8")
+        except Exception:
+            logger.warning("Failed to decrypt memory %s for reflection", memory_id)
+            raise HTTPException(status_code=503, detail="Reflection generation unavailable")
+    else:
+        # Unencrypted/legacy memory — use content directly
+        plaintext = memory.content
+
+    # 5. Determine the year for the system prompt
+    year = memory.captured_at.year
+
+    # 6. Call LLM (local Ollama only — no fallback configured)
+    system_prompt = (
+        f"Given this memory from {year}, generate a single short question "
+        "(under 15 words) that invites the user to reflect on it. "
+        "Be warm, personal, and specific to the content. "
+        "Return ONLY the question, nothing else."
+    )
+    try:
+        response = await llm.generate(
+            prompt=plaintext[:2000],  # Limit to avoid token overflow
+            system=system_prompt,
+            temperature=0.8,
+        )
+        prompt_text = response.text.strip().removeprefix('"').removesuffix('"')
+    except Exception:
+        logger.warning("LLM unavailable for reflection on memory %s", memory_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Reflection generation unavailable")
+
+    # 7. Cache the result (upsert with race-condition handling)
+    if cached:
+        cached.prompt_text = prompt_text
+        cached.generated_at = now
+        session.add(cached)
+    else:
+        session.add(ReflectionPrompt(
+            memory_id=memory_id,
+            prompt_text=prompt_text,
+            generated_at=now,
+        ))
+    try:
+        session.commit()
+    except IntegrityError:
+        # Another request already inserted a row for this memory_id.
+        # Roll back and return our generated prompt (the cached row is fine).
+        session.rollback()
+        logger.debug("Reflection cache race: another request won for memory %s", memory_id)
+
+    return {"prompt": prompt_text}
+
+
 @router.get("", response_model=list[MemoryRead])
 async def list_memories(
     skip: int = Query(0, ge=0),
@@ -342,7 +449,7 @@ async def delete_memory(
     # Delete dependent rows to avoid FK constraint violations
     from sqlalchemy import text as sa_text
 
-    for table in ("search_tokens", "memory_tags", "sources"):
+    for table in ("search_tokens", "memory_tags", "sources", "reflection_prompts"):
         session.execute(
             sa_text(f"DELETE FROM {table} WHERE memory_id = :mid"),  # noqa: S608
             {"mid": memory_id},

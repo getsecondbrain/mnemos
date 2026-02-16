@@ -1,45 +1,63 @@
-# Audit Report — P8.1
+# Audit Report — P8.2
 
 ```json
 {
   "high": [],
   "medium": [
     {
-      "file": "backend/tests/test_memories.py",
-      "line": 450,
-      "issue": "Test `test_on_this_day_returns_matching_memories` will fail if run on Feb 29 (leap day). `_same_day_in_year(now, now.year - 1)` clamps Feb 29 to Feb 28 when the previous year is non-leap, but the endpoint queries for today's day (29), so the stored memory with day=28 won't match. Same issue affects `test_on_this_day_ordered_by_year_descending` and `test_on_this_day_limits_to_10` and `test_on_this_day_filters_by_visibility`. The `_same_day_in_year` helper was designed to prevent a crash on replace(), but it creates a date mismatch with the query. Fix: skip these tests on Feb 29, or use a fixed non-leap-boundary date via freezegun/time-machine instead of `datetime.now()`.",
+      "file": "backend/app/routers/memories.py",
+      "line": 291,
+      "issue": "Catches bare Exception instead of LLMError on the LLM call. This will silently swallow programming errors (e.g., AttributeError, TypeError) in the LLM service or response parsing, returning 503 instead of surfacing bugs. Should catch (LLMError, httpx.HTTPError, httpx.TimeoutException) for expected failure modes and let unexpected errors propagate.",
+      "category": "error-handling"
+    },
+    {
+      "file": "backend/tests/test_reflect.py",
+      "line": 62,
+      "issue": "No test exercises the encrypted memory decryption path (where content_dek is set). All tests use plaintext memories (content_dek=None). The dummy EncryptionService initialized with b'\\x00' * 32 cannot decrypt real encrypted content. A test should create a memory encrypted with the dummy key and verify the reflect endpoint decrypts it correctly before sending to the LLM.",
+      "category": "error-handling"
+    },
+    {
+      "file": "backend/app/routers/memories.py",
+      "line": 251,
+      "issue": "The `now` timestamp is captured before the potentially slow LLM call (which can take up to 120 seconds per timeout config). The cached entry's `generated_at` will be set to a time that could be minutes earlier than when the prompt was actually generated. Under extreme cases, a 2-minute LLM call would effectively shorten the 24-hour cache TTL by 2 minutes (negligible), but if concurrent requests arrive during the LLM call, they won't see a cache entry and will also call the LLM (wasting resources). Consider moving `now = datetime.now(timezone.utc)` to after the LLM call, or setting `generated_at` separately.",
       "category": "logic"
     }
   ],
   "low": [
     {
-      "file": "backend/tests/test_memories.py",
-      "line": 604,
-      "issue": "Test asserts status_code 403 for missing auth, while the task plan specified 401. The test is actually correct (FastAPI HTTPBearer with auto_error=True returns 403 for missing credentials), but this is an inconsistency between the plan and the implementation. No code change needed — the test matches runtime behavior.",
+      "file": "backend/app/routers/memories.py",
+      "line": 227,
+      "issue": "The `from datetime import timedelta` import inside the function body is unnecessary — `timedelta` could be imported at module level alongside the existing `from datetime import datetime, timezone` on line 4. Function-level imports add minor overhead on each call.",
+      "category": "style"
+    },
+    {
+      "file": "backend/app/models/reflection.py",
+      "line": 11,
+      "issue": "Uses uuid4 for IDs instead of uuid7 as recommended by CLAUDE.md ('UUIDs for all IDs (uuid7 for time-ordering where applicable)'). Since reflection_prompts are queried by memory_id (not scanned in order), this is functionally harmless but inconsistent with the project convention.",
       "category": "inconsistency"
     },
     {
       "file": "backend/app/routers/memories.py",
-      "line": 193,
-      "issue": "The LIMIT 10 is hardcoded in the SQL string. Consider extracting to a constant or making it a query parameter with a default, for consistency with the `list_memories` endpoint which accepts a configurable `limit`. This is minor since the task spec explicitly says 'up to 10'.",
+      "line": 285,
+      "issue": "The content truncation limit of 2000 characters is hardcoded. Consider making this a constant at module level (e.g., _MAX_REFLECT_CONTENT_LEN = 2000) for readability and easy adjustment.",
       "category": "hardcoded"
     }
   ],
   "validated": [
-    "Route ordering: `/on-this-day` (line 165) is correctly placed before `/{memory_id}` (line 245), preventing path parameter capture conflict.",
-    "Auth: Endpoint uses `Depends(require_auth)` consistent with all other authenticated endpoints.",
-    "SQL injection: All user-facing values (month, day, year, visibility) are passed as parameterized bind variables via `:month`, `:day`, `:year`, `:vis` — no string interpolation.",
-    "Visibility filter: Correctly applies `AND visibility = :vis` only when `visibility != 'all'`, matching the pattern in `timeline_stats` and `list_memories`.",
-    "Response model: Return type `list[MemoryRead]` matches `response_model=list[MemoryRead]`; `_attach_tags()` correctly converts `Memory` ORM objects to `MemoryRead` with tags populated.",
-    "Order preservation: Raw SQL returns IDs in `captured_at DESC` order, then `select(Memory).where(in_())` fetches unordered, but lines 204-205 rebuild correct order via `mem_by_id` dict keyed by ID.",
-    "Empty result: Returns `[]` (not 404) when no memories match, matching task spec.",
-    "Date extraction: SQLite `strftime('%m', captured_at)` and `strftime('%d', captured_at)` work correctly on ISO-8601 datetime strings stored by SQLModel/SQLAlchemy.",
-    "Year comparison: `strftime('%Y', captured_at) < :year` uses string comparison on zero-padded 4-digit year strings, which is lexicographically equivalent to numeric comparison for all realistic years.",
-    "Test coverage: 7 test cases covering matching memories, current-year exclusion, different-day exclusion, empty result, descending order, limit of 10, visibility filtering, and auth requirement.",
-    "Test isolation: Tests use `session` fixture from conftest.py which provides a fresh in-memory SQLite DB per test via `StaticPool`.",
-    "Leap year safety: `_same_day_in_year()` helper at line 7 correctly clamps day for Feb 29 in non-leap years, preventing `ValueError` crashes in tests (though creates a query mismatch edge case noted in medium issues).",
-    "No resource leaks: `session.execute()` results are consumed immediately; no unclosed cursors or connections.",
-    "Consistent `sa_text` import pattern: Uses `from sqlalchemy import text as sa_text` inside the function body, matching the existing `timeline_stats` and `delete_memory` patterns."
+    "Route ordering is correct: /{memory_id}/reflect (line 214) is defined after static routes (/stats/timeline, /on-this-day) and before the generic /{memory_id} (line 352), so FastAPI path matching works correctly",
+    "Cloud fallback safety guard (line 236-244) blocks sending decrypted content to third-party APIs — checked BEFORE decryption occurs, with dedicated test coverage",
+    "ReflectionPrompt model is registered in models/__init__.py (line 13) so SQLModel metadata.create_all() will create the table",
+    "Delete cascade in delete_memory (line 452) includes 'reflection_prompts' table cleanup",
+    "Cache TTL check (line 254-255) correctly handles SQLite's naive datetimes by explicitly adding UTC tzinfo before comparison",
+    "Race condition on cache upsert (lines 306-312) is handled via IntegrityError catch with session rollback — concurrent requests that both miss cache will not crash",
+    "LLM response quote stripping (line 290) uses removeprefix/removesuffix which only strips one leading/trailing quote — safer than strip('\"') which would strip multiple",
+    "Auth is required via Depends(require_auth) — unauthenticated requests are rejected",
+    "Memory not found returns 404 (line 232), consistent with other endpoints",
+    "Error responses use generic 'Reflection generation unavailable' message — no internal details leaked to client",
+    "Encryption envelope construction (lines 261-265) correctly mirrors the pattern used in create_memory (lines 99-103) with bytes.fromhex conversion",
+    "The has_fallback property exists on LLMService (llm.py line 77) and tests correctly set it via MagicMock attribute assignment",
+    "All 8 tests cover the key scenarios: LLM response, cache hit, cache expiry, 404, LLM unavailable, auth required, unencrypted memory, and cloud fallback blocking",
+    "Foreign key from reflection_prompts.memory_id to memories.id with unique constraint ensures at most one cached prompt per memory"
   ]
 }
 ```
