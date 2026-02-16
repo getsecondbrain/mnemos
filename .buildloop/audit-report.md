@@ -1,103 +1,102 @@
-# Audit Report — P10.5
+# Audit Report — P11.1
 
 ```json
 {
   "high": [
     {
-      "file": "frontend/src/components/SuggestionCards.tsx",
-      "line": 139,
-      "issue": "handleEnrichResponse calls onSuggestionApplied() even if acceptSuggestion() fails. The catch block silently swallows the error and falls through to onSuggestionApplied(), which triggers a full timeline refresh even though the suggestion wasn't actually marked as accepted. This creates a UI desync: the card is removed locally (line 144) but the backend still has it as 'pending', so it will reappear on the next page load.",
+      "file": "backend/app/models/person.py",
+      "line": 21,
+      "issue": "UniqueConstraint on (memory_id, person_id) contradicts the plan's design decision #1 which states the synthetic PK 'allows for potential future scenarios where the same person is linked to the same memory via different sources'. The unique constraint prevents exactly that scenario. If Immich sync and manual tagging both link the same person to the same memory, the second insert will fail. The idempotent check in the router returns the existing link without updating source/confidence, so the second source's metadata is silently lost.",
       "category": "logic"
     },
     {
-      "file": "backend/app/routers/loop_settings.py",
-      "line": 40,
-      "issue": "PUT /{loop_name} accepts arbitrary strings as loop_name path parameter with no validation. While session.get() safely returns None/404 for unknown names, there is no whitelist validation against known loop types (tag_suggest, enrich_prompt, connection_rescan, digest). If a LoopState record somehow exists with an unexpected name, it could be toggled. More critically, there's no input validation to prevent extremely long strings being passed as loop_name, which would be sent to the DB as a primary key lookup. This is LOW risk due to SQLModel parameterization but worth noting.",
-      "category": "security"
+      "file": "backend/app/routers/persons.py",
+      "line": 169,
+      "issue": "When a duplicate link is detected, the endpoint returns HTTP 201 (Created) for an existing resource it did NOT create. This is semantically incorrect and misleading to API consumers — it should return 200 to indicate the resource already existed. Callers relying on 201 to detect new creations will get false positives.",
+      "category": "api-contract"
     }
   ],
   "medium": [
     {
-      "file": "frontend/src/components/SuggestionCards.tsx",
-      "line": 61,
-      "issue": "Memory title fetching inside the suggestion loop is sequential (one getMemory call per unique memory_id). If there are 3 suggestions referencing 3 different memories, this results in 3 serial API calls plus 3 serial decryption operations. Should use Promise.all for parallel fetching of memory titles after collecting unique IDs, similar to how Timeline decryptMemories uses Promise.all.",
+      "file": "backend/app/routers/persons.py",
+      "line": 44,
+      "issue": "create_person does not handle IntegrityError from duplicate immich_person_id (which has a UNIQUE constraint on the Person table). If two requests try to create persons with the same immich_person_id concurrently, the second will get an unhandled 500 Internal Server Error instead of a clear 409 Conflict.",
       "category": "error-handling"
     },
     {
-      "file": "frontend/src/components/SuggestionCards.tsx",
-      "line": 29,
-      "issue": "loadSuggestions has decrypt in its useCallback dependency array. If the decrypt function reference changes (e.g., on re-render of the encryption hook after lock/unlock), the entire suggestion list will be re-fetched and re-decrypted. This could cause unnecessary API calls and flickering. The OnThisDay component likely has the same pattern but it's worth noting as a potential performance issue.",
-      "category": "error-handling"
-    },
-    {
-      "file": "backend/tests/test_suggestions_api.py",
-      "line": 19,
-      "issue": "Test helper _create_memory creates a Memory with plaintext title='Test Memory' and content='Test content', but the Memory model in production uses encrypted fields. Tests using the 'client' fixture (which overrides require_auth but NOT get_encryption_service) could silently pass even if the accept endpoint's decryption logic is broken, because the encryption_service dependency is not overridden. The test file tests loop_settings endpoints but doesn't actually test the suggestions accept/dismiss endpoints as specified in the plan (missing test_accept_tag_suggestion, test_dismiss_suggestion, test_accept_already_processed, test_accept_nonexistent tests).",
-      "category": "api-contract"
-    },
-    {
-      "file": "frontend/src/components/SuggestionCards.tsx",
-      "line": 130,
-      "issue": "handleRespond sets respondingSuggestionId and prefill state, but there's no mechanism to clear these states if the user clicks 'Respond' on a different enrichment suggestion while QuickCapture is already open for a previous one. The respondingSuggestionId will be overwritten but the old QuickCapture submission could race with the new one.",
+      "file": "backend/app/routers/persons.py",
+      "line": 109,
+      "issue": "PersonUpdate allows setting name_encrypted or name_dek independently to non-None values but does not validate they are set together. Setting name_encrypted without name_dek (or vice versa) creates an inconsistent encrypted envelope that cannot be decrypted. Should either require both or neither.",
       "category": "logic"
     },
     {
-      "file": "backend/tests/test_suggestions_api.py",
-      "line": 84,
-      "issue": "test_get_loop_settings_empty assumes an empty database has no loop states. However, the LoopScheduler.initialize() method (called during app lifespan startup) seeds default loop states. Since the test uses TestClient which triggers the lifespan, the loop_state table may already have entries. The test may pass only because the lifespan's LoopScheduler initialization is inside a try/except that fails (due to missing Qdrant), preventing the seeding. This creates a fragile test that depends on Qdrant being unreachable.",
+      "file": "backend/app/routers/persons.py",
+      "line": 103,
+      "issue": "PersonUpdate allows setting name to a new value while leaving name_encrypted/name_dek unchanged (still pointing to the old name). After update, person.name and the decrypted name_encrypted will diverge. The update endpoint should clear name_encrypted/name_dek when name changes (or require the caller to update both).",
+      "category": "logic"
+    },
+    {
+      "file": "backend/app/models/person.py",
+      "line": 90,
+      "issue": "LinkPersonRequest.source uses Literal['manual', 'immich', 'auto'] for Pydantic validation, but MemoryPerson.source (line 27) is typed as plain str. This is fine for the API path, but any code that creates MemoryPerson directly (e.g., future Immich sync service) bypasses validation and only has the DB CHECK constraint as a guard. Minor inconsistency — the DB constraint handles it, but the type annotation is misleading.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "backend/app/routers/persons.py",
+      "line": 66,
+      "issue": "Person name search uses SQLite LIKE via .contains() which is case-sensitive by default in SQLite (unlike PostgreSQL). Searching for 'alice' won't find 'Alice'. The tags router normalizes to lowercase on storage (line 40 of tags.py), but persons.py does not normalize. Consider using func.lower() or COLLATE NOCASE for consistent search behavior.",
       "category": "logic"
     }
   ],
   "low": [
     {
-      "file": "frontend/src/components/SuggestionCards.tsx",
-      "line": 189,
-      "issue": "Tag suggestion card renders s.decryptedContent as a single tag pill, which is correct for the current worker implementation (one Suggestion per tag). However, if the worker behavior ever changes to put multiple comma-separated tags in one suggestion, the display would show the raw multi-tag string in a single pill instead of multiple pills.",
+      "file": "backend/app/models/person.py",
+      "line": 78,
+      "issue": "MemoryPersonRead schema lacks model_config = {'from_attributes': True}. It's not needed currently since the router constructs MemoryPersonRead manually with keyword args, but this is inconsistent with PersonRead (which has it) and would break if anyone tries MemoryPersonRead.model_validate(orm_obj) in the future.",
       "category": "inconsistency"
     },
     {
-      "file": "frontend/src/components/Settings.tsx",
-      "line": 438,
-      "issue": "The last_run_at date display uses toLocaleString() which includes time zone information that may be confusing since the backend stores UTC. The other date displays in the app (e.g., heartbeat status on line 241) use toLocaleDateString() which is date-only. Minor inconsistency in date formatting across the Settings page.",
-      "category": "inconsistency"
+      "file": "backend/app/routers/persons.py",
+      "line": 64,
+      "issue": "The type: ignore comments on lines 64 and 66 suppress mypy/pyright warnings for SQLModel's ordering and filtering. This is consistent with the existing codebase pattern (same comments in tags.py and memories.py) so it's acceptable, but worth noting.",
+      "category": "style"
     },
     {
-      "file": "frontend/src/components/SuggestionCards.tsx",
-      "line": 26,
-      "issue": "sessionStorage key 'suggestionsDismissed' is a magic string used in two places (line 26 initialization and line 126 in handleDismissAll). Should be a constant to prevent typo-based bugs, though the current code is correct.",
-      "category": "hardcoded"
+      "file": "backend/tests/test_persons.py",
+      "line": 228,
+      "issue": "Auth test checks for status 403 but the require_auth dependency raises 401 via HTTPBearer(auto_error=True) which returns 403 for missing credentials. This works because FastAPI's HTTPBearer returns 403 when no Authorization header is present, but the test comment says '401/403' which is slightly misleading — it's always 403 in this specific test scenario.",
+      "category": "style"
     },
     {
-      "file": "backend/app/routers/loop_settings.py",
-      "line": 30,
-      "issue": "GET endpoint uses async def but performs synchronous SQLModel operations (session.exec). This is consistent with the rest of the codebase (all routers use async def with synchronous session ops), so not a real issue, but worth noting that true async DB access is not used.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "frontend/src/components/SuggestionCards.tsx",
-      "line": 1,
-      "issue": "The file is named SuggestionCards.tsx but the task description specifies creating SuggestionCard.tsx (singular). The component is imported correctly as SuggestionCards in Timeline.tsx so this is not a bug, just a naming discrepancy with the task spec.",
-      "category": "inconsistency"
+      "file": "backend/app/routers/persons.py",
+      "line": 8,
+      "issue": "IntegrityError is imported from sqlalchemy.exc but only used in link_person_to_memory's try/except block. The import is correctly placed and used — just noting it's needed for the race-condition handling.",
+      "category": "style"
     }
   ],
   "validated": [
-    "SuggestionCards correctly checks sessionStorage for dismissed state on mount and persists dismissal",
-    "QuickCapture component accepts prefill prop with the correct type signature { title: string; content: string }",
-    "API functions getSuggestions, acceptSuggestion, dismissSuggestion, getLoopSettings, updateLoopSetting are correctly defined in api.ts with proper types",
-    "LoopSetting TypeScript interface matches LoopStateRead Pydantic schema (loop_name, last_run_at nullable, next_run_at, enabled)",
-    "Suggestion TypeScript interface matches SuggestionRead Pydantic schema fields correctly",
-    "loop_settings router is properly registered in main.py with app.include_router(loop_settings.router)",
-    "suggestions router is properly registered in main.py with app.include_router(suggestions.router)",
-    "SuggestionCards is rendered in Timeline.tsx only when isFilterEmpty(filters) is true, matching the plan's 'home view only' requirement",
-    "SuggestionCards is placed between QuickCapture and the memory list in Timeline.tsx as specified",
-    "MAX_VISIBLE_SUGGESTIONS = 3 is correctly passed as limit to getSuggestions API call",
-    "loop_settings PUT endpoint correctly uses session.get(LoopState, loop_name) since loop_name is the primary key",
-    "Envelope decryption pattern in SuggestionCards matches the established pattern used in Timeline and OnThisDay (hexToBuffer + decrypt)",
-    "Settings.tsx correctly fetches loop settings in the existing Promise.all block with .catch(() => []) fallback",
-    "Accept and dismiss button loading states correctly prevent double-clicks via actionLoading state per suggestion ID",
-    "Error messages are shown inline per card (actionError state) as specified in the plan",
-    "Auth is required on both loop settings endpoints via Depends(require_auth)",
-    "Tests verify auth requirement with client_no_auth fixture for both GET and PUT endpoints"
+    "Person and MemoryPerson models correctly define all fields from the task spec (id, name, name_encrypted, name_dek, immich_person_id, face_thumbnail_path, created_at, updated_at for Person; id, memory_id, person_id, source, confidence, created_at for MemoryPerson)",
+    "Foreign keys on MemoryPerson correctly reference memories.id and persons.id",
+    "CheckConstraint on source field correctly limits values to 'manual', 'immich', 'auto'",
+    "All CRUD endpoints (POST, GET list, GET detail, PUT, DELETE) are implemented for persons",
+    "Memory-person link/unlink/list endpoints (POST, DELETE, GET) are implemented correctly",
+    "Router registration in main.py correctly adds both persons.router and persons.memory_persons_router",
+    "Model imports in __init__.py correctly import Person and MemoryPerson for table registration",
+    "Cascade delete in memories.py correctly includes 'memory_persons' in the table list",
+    "delete_person correctly removes all MemoryPerson associations before deleting the Person record",
+    "updated_at is explicitly set in update_person as required by Known Pattern #3",
+    "Empty name validation works correctly in both create and update endpoints (strip + check)",
+    "Idempotent link behavior: duplicate link returns existing record instead of erroring",
+    "Race condition handling in link_person_to_memory: IntegrityError caught and existing row fetched after rollback",
+    "get_person correctly counts linked memories using func.count() on MemoryPerson",
+    "_get_memory_persons helper correctly joins MemoryPerson with Person and denormalizes person_name",
+    "Test suite covers all 19 specified test cases including auth, edge cases, cascading deletes, and idempotent linking",
+    "memory_id test fixture correctly creates Memory directly in session (avoids encryption dependency)",
+    "Pagination parameters have proper validation (skip ge=0, limit ge=1 le=200)",
+    "Pattern is consistent with existing tags router (same dual-router approach, same CRUD patterns)",
+    "No SQL injection risk — all raw SQL in memories.py cascade delete uses parameterized queries",
+    "DB PRAGMA foreign_keys=ON in db.py ensures FK constraints are enforced at the SQLite level",
+    "No resource leaks — all DB operations use the session dependency which is managed by FastAPI's DI"
   ]
 }
 ```

@@ -479,7 +479,7 @@ async def delete_memory(
     # Delete dependent rows to avoid FK constraint violations
     from sqlalchemy import text as sa_text
 
-    for table in ("search_tokens", "memory_tags", "sources", "reflection_prompts", "suggestions"):
+    for table in ("search_tokens", "memory_tags", "sources", "reflection_prompts", "suggestions", "memory_persons"):
         session.execute(
             sa_text(f"DELETE FROM {table} WHERE memory_id = :mid"),  # noqa: S608
             {"mid": memory_id},

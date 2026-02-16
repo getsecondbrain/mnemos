@@ -58,6 +58,10 @@ def engine_fixture():
     )
     SQLModel.metadata.create_all(engine)
     yield engine
+    # Disable FK constraints before dropping to avoid ordering issues
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        conn.commit()
     SQLModel.metadata.drop_all(engine)
     engine.dispose()
 
