@@ -9,6 +9,7 @@ import QuickCapture from "./QuickCapture";
 import MemoryCardMenu from "./MemoryCardMenu";
 import ConfirmModal from "./ConfirmModal";
 import OnThisDay from "./OnThisDay";
+import SuggestionCards from "./SuggestionCards";
 import { isFilterEmpty, CONTENT_TYPES } from "./FilterPanel";
 import type { FilterState } from "./FilterPanel";
 import { useLayoutFilters } from "./Layout";
@@ -613,6 +614,11 @@ export default function Timeline() {
       )}
 
       <QuickCapture onMemoryCreated={handleRefresh} />
+
+      {/* AI Suggestions — only when no filters active */}
+      {isFilterEmpty(filters) && (
+        <SuggestionCards onSuggestionApplied={handleRefresh} />
+      )}
 
       {memories.length === 0 ? (
         <p className="text-gray-500 text-center py-8">

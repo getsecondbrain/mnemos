@@ -17,6 +17,7 @@ import type {
   TagUpdate,
   MemoryTag,
   Suggestion,
+  LoopSetting,
 } from "../types";
 
 const BASE_URL = "/api";
@@ -574,6 +575,22 @@ export async function acceptSuggestion(id: string): Promise<Suggestion> {
 export async function dismissSuggestion(id: string): Promise<Suggestion> {
   return request<Suggestion>(`/suggestions/${id}/dismiss`, {
     method: "POST",
+  });
+}
+
+// --- Loop settings endpoints ------------------------------------------------
+
+export async function getLoopSettings(): Promise<LoopSetting[]> {
+  return request<LoopSetting[]>("/settings/loops");
+}
+
+export async function updateLoopSetting(
+  loopName: string,
+  update: { enabled: boolean },
+): Promise<LoopSetting> {
+  return request<LoopSetting>(`/settings/loops/${loopName}`, {
+    method: "PUT",
+    body: JSON.stringify(update),
   });
 }
 

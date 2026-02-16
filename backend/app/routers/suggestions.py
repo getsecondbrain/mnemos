@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/suggestions", tags=["suggestions"])
 async def list_suggestions(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    enc: EncryptionService = Depends(get_encryption_service),
+    _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> list[SuggestionRead]:
     """List pending suggestions, most recent first."""
@@ -41,6 +41,7 @@ async def list_suggestions(
 @router.post("/{suggestion_id}/accept", response_model=SuggestionRead)
 async def accept_suggestion(
     suggestion_id: str,
+    _session_id: str = Depends(require_auth),
     enc: EncryptionService = Depends(get_encryption_service),
     session: Session = Depends(get_session),
 ) -> SuggestionRead:

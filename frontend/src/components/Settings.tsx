@@ -7,10 +7,12 @@ import {
   listHeirs,
   reprocessSources,
   exportAllData,
+  getLoopSettings,
+  updateLoopSetting,
 } from "../services/api";
 import type { ReprocessResult } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
-import type { HeartbeatStatus, TestamentConfig } from "../types";
+import type { HeartbeatStatus, TestamentConfig, LoopSetting } from "../types";
 
 interface HealthResponse {
   status: string;
@@ -32,7 +34,35 @@ export default function Settings() {
   const [reprocessError, setReprocessError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [loopSettings, setLoopSettings] = useState<LoopSetting[]>([]);
+  const [loopError, setLoopError] = useState<string>("");
+  const [loopSaving, setLoopSaving] = useState<Record<string, boolean>>({});
   const { isUnlocked } = useEncryption();
+
+  function formatLoopName(name: string): string {
+    const names: Record<string, string> = {
+      tag_suggest: "Tag Suggestions",
+      enrich_prompt: "Enrichment Prompts",
+      connection_rescan: "Connection Discovery",
+      digest: "Weekly Digest",
+    };
+    return names[name] || name;
+  }
+
+  async function handleToggleLoop(loopName: string, enabled: boolean) {
+    setLoopSaving((prev) => ({ ...prev, [loopName]: true }));
+    try {
+      const updated = await updateLoopSetting(loopName, { enabled });
+      setLoopSettings((prev) =>
+        prev.map((l) => (l.loop_name === updated.loop_name ? updated : l))
+      );
+      setLoopError("");
+    } catch (err) {
+      setLoopError(err instanceof Error ? err.message : "Failed to update setting");
+    } finally {
+      setLoopSaving((prev) => ({ ...prev, [loopName]: false }));
+    }
+  }
 
   async function handleExport() {
     setExporting(true);
@@ -73,16 +103,18 @@ export default function Settings() {
   useEffect(() => {
     async function load() {
       try {
-        const [h, hb, tc, heirs] = await Promise.all([
+        const [h, hb, tc, heirs, loops] = await Promise.all([
           healthCheck().catch(() => null),
           getHeartbeatStatus().catch(() => null),
           getTestamentConfig().catch(() => null),
           listHeirs().catch(() => []),
+          getLoopSettings().catch(() => []),
         ]);
         setHealth(h);
         setHeartbeatStatus(hb);
         setTestamentConfig(tc);
         setHeirCount(heirs.length);
+        setLoopSettings(loops);
       } finally {
         setLoading(false);
       }
@@ -388,6 +420,38 @@ export default function Settings() {
             )}
           </div>
         )}
+      </div>
+
+      {/* AI Suggestions Settings */}
+      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
+        <h2 className="text-lg font-semibold text-gray-100 mb-3">AI Suggestions</h2>
+        <p className="text-gray-400 text-sm mb-4">
+          Control background AI loops that generate tag suggestions and enrichment prompts.
+        </p>
+        {loopError && <p className="text-red-400 text-sm mb-2">{loopError}</p>}
+        <div className="space-y-3">
+          {loopSettings.map((loop) => (
+            <div key={loop.loop_name} className="flex items-center justify-between">
+              <div>
+                <p className="text-gray-200 text-sm font-medium">{formatLoopName(loop.loop_name)}</p>
+                <p className="text-gray-500 text-xs">
+                  Last run: {loop.last_run_at ? new Date(loop.last_run_at).toLocaleString() : "Never"}
+                </p>
+              </div>
+              <button
+                onClick={() => handleToggleLoop(loop.loop_name, !loop.enabled)}
+                disabled={loopSaving[loop.loop_name]}
+                className={`px-3 py-1 rounded text-sm transition-colors ${
+                  loop.enabled
+                    ? "bg-green-700 hover:bg-green-600 text-white"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                }`}
+              >
+                {loopSaving[loop.loop_name] ? "..." : loop.enabled ? "Enabled" : "Disabled"}
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* About */}

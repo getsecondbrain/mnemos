@@ -230,3 +230,11 @@ export interface Suggestion {
   created_at: string;
   updated_at: string;
 }
+
+/** Matches backend LoopStateRead schema */
+export interface LoopSetting {
+  loop_name: string;
+  last_run_at: string | null;
+  next_run_at: string;
+  enabled: boolean;
+}
