@@ -140,6 +140,8 @@ export async function listMemories(params?: {
   year?: number;
   order_by?: string;
   visibility?: string;  // "public" | "private" | "all"
+  date_from?: string;  // ISO date string, e.g. "2024-01-01"
+  date_to?: string;    // ISO date string, e.g. "2024-12-31"
 }): Promise<Memory[]> {
   const query = new URLSearchParams();
   if (params?.skip != null) query.set("skip", String(params.skip));
@@ -153,6 +155,8 @@ export async function listMemories(params?: {
   if (params?.year != null) query.set("year", String(params.year));
   if (params?.order_by) query.set("order_by", params.order_by);
   if (params?.visibility) query.set("visibility", params.visibility);
+  if (params?.date_from) query.set("date_from", params.date_from);
+  if (params?.date_to) query.set("date_to", params.date_to);
   const qs = query.toString();
   return request<Memory[]>(`/memories${qs ? `?${qs}` : ""}`);
 }

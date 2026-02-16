@@ -604,3 +604,232 @@ class TestOnThisDay:
         """The endpoint returns 403 without auth."""
         resp = client_no_auth.get("/api/memories/on-this-day")
         assert resp.status_code == 403
+
+
+# ── Compound Filters ─────────────────────────────────────────────────
+
+
+class TestCompoundFilters:
+    """Tests for date_from, date_to, and comma-separated content_type filters."""
+
+    def test_list_memories_filter_by_date_from(self, client, session):
+        """Only memories on or after date_from are returned."""
+        from app.models.memory import Memory
+
+        old = Memory(
+            title="Old", content="C",
+            captured_at=datetime(2023, 6, 15, tzinfo=timezone.utc),
+        )
+        new = Memory(
+            title="New", content="C",
+            captured_at=datetime(2024, 6, 15, tzinfo=timezone.utc),
+        )
+        session.add_all([old, new])
+        session.commit()
+
+        resp = client.get("/api/memories?date_from=2024-01-01&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert new.id in ids
+        assert old.id not in ids
+
+    def test_list_memories_filter_by_date_to(self, client, session):
+        """Only memories on or before date_to are returned."""
+        from app.models.memory import Memory
+
+        old = Memory(
+            title="Old", content="C",
+            captured_at=datetime(2023, 6, 15, tzinfo=timezone.utc),
+        )
+        new = Memory(
+            title="New", content="C",
+            captured_at=datetime(2024, 6, 15, tzinfo=timezone.utc),
+        )
+        session.add_all([old, new])
+        session.commit()
+
+        resp = client.get("/api/memories?date_to=2023-12-31&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert old.id in ids
+        assert new.id not in ids
+
+    def test_list_memories_filter_by_date_range(self, client, session):
+        """Only memories within the date range are returned."""
+        from app.models.memory import Memory
+
+        before = Memory(
+            title="Before", content="C",
+            captured_at=datetime(2023, 3, 1, tzinfo=timezone.utc),
+        )
+        inside = Memory(
+            title="Inside", content="C",
+            captured_at=datetime(2024, 6, 15, tzinfo=timezone.utc),
+        )
+        after = Memory(
+            title="After", content="C",
+            captured_at=datetime(2025, 9, 1, tzinfo=timezone.utc),
+        )
+        session.add_all([before, inside, after])
+        session.commit()
+
+        resp = client.get("/api/memories?date_from=2024-01-01&date_to=2024-12-31&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert inside.id in ids
+        assert before.id not in ids
+        assert after.id not in ids
+
+    def test_list_memories_filter_by_content_type_comma_separated(self, client, session):
+        """Comma-separated content_type returns matching types only."""
+        from app.models.memory import Memory
+
+        text_mem = Memory(title="T", content="C", content_type="text")
+        photo_mem = Memory(title="P", content="C", content_type="photo")
+        voice_mem = Memory(title="V", content="C", content_type="voice")
+        session.add_all([text_mem, photo_mem, voice_mem])
+        session.commit()
+
+        resp = client.get("/api/memories?content_type=text,photo&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert text_mem.id in ids
+        assert photo_mem.id in ids
+        assert voice_mem.id not in ids
+
+    def test_list_memories_compound_filters_stack(self, client, session):
+        """Multiple filters applied simultaneously use AND logic."""
+        from app.models.memory import Memory
+
+        # Matches all criteria
+        match = Memory(
+            title="Match", content="C", content_type="photo",
+            visibility="public",
+            captured_at=datetime(2024, 6, 15, tzinfo=timezone.utc),
+        )
+        # Wrong content_type
+        wrong_type = Memory(
+            title="WrongType", content="C", content_type="voice",
+            visibility="public",
+            captured_at=datetime(2024, 6, 15, tzinfo=timezone.utc),
+        )
+        # Wrong visibility
+        wrong_vis = Memory(
+            title="WrongVis", content="C", content_type="photo",
+            visibility="private",
+            captured_at=datetime(2024, 6, 15, tzinfo=timezone.utc),
+        )
+        # Out of date range
+        wrong_date = Memory(
+            title="WrongDate", content="C", content_type="photo",
+            visibility="public",
+            captured_at=datetime(2023, 6, 15, tzinfo=timezone.utc),
+        )
+        session.add_all([match, wrong_type, wrong_vis, wrong_date])
+        session.commit()
+
+        resp = client.get(
+            "/api/memories?content_type=photo&visibility=public"
+            "&date_from=2024-01-01&date_to=2024-12-31"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert match.id in ids
+        assert wrong_type.id not in ids
+        assert wrong_vis.id not in ids
+        assert wrong_date.id not in ids
+
+    def test_list_memories_date_from_invalid_format(self, client):
+        """Invalid date_from returns 422."""
+        resp = client.get("/api/memories?date_from=not-a-date")
+        assert resp.status_code == 422
+
+    def test_list_memories_date_to_invalid_format(self, client):
+        """Invalid date_to returns 422."""
+        resp = client.get("/api/memories?date_to=not-a-date")
+        assert resp.status_code == 422
+
+    def test_list_memories_date_filters_with_year_filter(self, client, session):
+        """date_from stacks with year filter using AND logic."""
+        from app.models.memory import Memory
+
+        jan = Memory(
+            title="Jan", content="C",
+            captured_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
+        )
+        jul = Memory(
+            title="Jul", content="C",
+            captured_at=datetime(2024, 7, 15, tzinfo=timezone.utc),
+        )
+        session.add_all([jan, jul])
+        session.commit()
+
+        resp = client.get("/api/memories?year=2024&date_from=2024-06-01&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert jul.id in ids
+        assert jan.id not in ids
+
+    def test_list_memories_empty_content_type_ignored(self, client, session):
+        """Empty content_type query param is treated as no filter."""
+        from app.models.memory import Memory
+
+        text_mem = Memory(title="T", content="C", content_type="text")
+        photo_mem = Memory(title="P", content="C", content_type="photo")
+        session.add_all([text_mem, photo_mem])
+        session.commit()
+
+        resp = client.get("/api/memories?content_type=&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        # Empty string should not filter — both memories returned
+        assert text_mem.id in ids
+        assert photo_mem.id in ids
+
+    def test_list_memories_date_to_explicit_midnight_datetime(self, client, session):
+        """Explicit midnight datetime is treated as exact bound, not end-of-day."""
+        from app.models.memory import Memory
+
+        at_midnight = Memory(
+            title="Midnight", content="C",
+            captured_at=datetime(2024, 12, 31, 0, 0, 0, tzinfo=timezone.utc),
+        )
+        afternoon = Memory(
+            title="Afternoon", content="C",
+            captured_at=datetime(2024, 12, 31, 14, 0, 0, tzinfo=timezone.utc),
+        )
+        session.add_all([at_midnight, afternoon])
+        session.commit()
+
+        # Explicit datetime T00:00:00 means <= midnight, not inclusive full day
+        resp = client.get(
+            "/api/memories?date_to=2024-12-31T00:00:00&visibility=all"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert at_midnight.id in ids
+        assert afternoon.id not in ids
+
+    def test_list_memories_content_type_single_still_works(self, client, session):
+        """Single content_type (no comma) still works as before."""
+        from app.models.memory import Memory
+
+        photo = Memory(title="Photo", content="C", content_type="photo")
+        text = Memory(title="Text", content="C", content_type="text")
+        session.add_all([photo, text])
+        session.commit()
+
+        resp = client.get("/api/memories?content_type=photo&visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert photo.id in ids
+        assert text.id not in ids

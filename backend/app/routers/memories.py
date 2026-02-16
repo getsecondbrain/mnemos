@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -323,17 +323,47 @@ async def list_memories(
     year: int | None = Query(None, description="Filter by captured_at year"),
     order_by: str = Query("captured_at", description="Sort field: captured_at or created_at"),
     visibility: Literal["public", "private", "all"] = Query("public", description="Filter: public, private, or all"),
+    date_from: str | None = Query(None, description="ISO date lower bound (inclusive), e.g. 2024-01-01"),
+    date_to: str | None = Query(None, description="ISO date upper bound (inclusive), e.g. 2024-12-31"),
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
 ) -> list[Memory]:
     order_col = Memory.captured_at if order_by == "captured_at" else Memory.created_at
     statement = select(Memory).order_by(order_col.desc())  # type: ignore[union-attr]
     if content_type:
-        statement = statement.where(Memory.content_type == content_type)  # type: ignore[arg-type]
+        types = [t.strip() for t in content_type.split(",")]
+        if len(types) == 1:
+            statement = statement.where(Memory.content_type == types[0])  # type: ignore[arg-type]
+        else:
+            statement = statement.where(Memory.content_type.in_(types))  # type: ignore[union-attr]
     if year is not None:
         start_dt = datetime(year, 1, 1, tzinfo=timezone.utc)
         end_dt = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
         statement = statement.where(Memory.captured_at >= start_dt).where(Memory.captured_at <= end_dt)  # type: ignore[arg-type]
+    if date_from is not None:
+        try:
+            dt_from = datetime.fromisoformat(date_from)
+            if dt_from.tzinfo is None:
+                dt_from = dt_from.replace(tzinfo=timezone.utc)
+            statement = statement.where(Memory.captured_at >= dt_from)  # type: ignore[arg-type]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid date_from format. Use ISO date (YYYY-MM-DD)")
+    if date_to is not None:
+        try:
+            dt_to = datetime.fromisoformat(date_to)
+            if dt_to.tzinfo is None:
+                dt_to = dt_to.replace(tzinfo=timezone.utc)
+            # Only apply inclusive-day heuristic for date-only strings (no "T"),
+            # e.g. "2024-12-31" → include the entire day via < next day.
+            # Explicit datetimes like "2024-12-31T00:00:00" are treated as-is.
+            is_date_only = "T" not in date_to
+            if is_date_only:
+                dt_to = dt_to + timedelta(days=1)
+                statement = statement.where(Memory.captured_at < dt_to)  # type: ignore[arg-type]
+            else:
+                statement = statement.where(Memory.captured_at <= dt_to)  # type: ignore[arg-type]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid date_to format. Use ISO date (YYYY-MM-DD)")
     if visibility != "all":
         statement = statement.where(Memory.visibility == visibility)
     if tag_ids:
