@@ -162,6 +162,51 @@ async def timeline_stats(
     }
 
 
+@router.get("/on-this-day", response_model=list[MemoryRead])
+async def on_this_day(
+    visibility: Literal["public", "private", "all"] = Query("public", description="Filter: public, private, or all"),
+    _session_id: str = Depends(require_auth),
+    session: Session = Depends(get_session),
+) -> list[MemoryRead]:
+    """Return up to 10 memories from previous years on today's month+day."""
+    from sqlalchemy import text as sa_text
+
+    now = datetime.now(timezone.utc)
+    current_month = now.strftime("%m")
+    current_day = now.strftime("%d")
+    current_year = now.strftime("%Y")
+
+    sql = (
+        "SELECT id FROM memories "
+        "WHERE strftime('%m', captured_at) = :month "
+        "AND strftime('%d', captured_at) = :day "
+        "AND strftime('%Y', captured_at) < :year"
+    )
+    params: dict[str, str] = {
+        "month": current_month,
+        "day": current_day,
+        "year": current_year,
+    }
+    if visibility != "all":
+        sql += " AND visibility = :vis"
+        params["vis"] = visibility
+    sql += " ORDER BY captured_at DESC LIMIT 10"
+
+    rows = session.execute(sa_text(sql), params).all()
+    if not rows:
+        return []
+
+    memory_ids = [r[0] for r in rows]
+    results = session.exec(
+        select(Memory).where(Memory.id.in_(memory_ids))  # type: ignore[union-attr]
+    ).all()
+    # Restore the captured_at DESC order from the raw SQL query
+    mem_by_id = {m.id: m for m in results}
+    memories = [mem_by_id[mid] for mid in memory_ids if mid in mem_by_id]
+
+    return _attach_tags(memories, session)
+
+
 @router.get("", response_model=list[MemoryRead])
 async def list_memories(
     skip: int = Query(0, ge=0),

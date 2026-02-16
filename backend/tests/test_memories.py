@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+import calendar
+from datetime import datetime, timedelta, timezone
+
+
+def _same_day_in_year(dt: datetime, year: int) -> datetime:
+    """Return *dt* with its year changed, safe for leap-year Feb 29.
+
+    If *dt* is Feb 29 but *year* is not a leap year the day is clamped to
+    Feb 28 so the test still exercises the "same month+day" logic without
+    crashing.
+    """
+    max_day = calendar.monthrange(year, dt.month)[1]
+    return dt.replace(year=year, day=min(dt.day, max_day))
+
 
 def test_create_memory(client):
     """POST /api/memories should create a new memory and return 201."""
@@ -425,3 +439,168 @@ class TestDeleteMemoryCascade:
         finally:
             fastapi_app.dependency_overrides.clear()
             fastapi_app.state.embedding_service = None
+
+
+# ── On This Day ──────────────────────────────────────────────────────
+
+
+class TestOnThisDay:
+    """Tests for GET /api/memories/on-this-day."""
+
+    def test_on_this_day_returns_matching_memories(self, client, session):
+        """Memories from previous years on today's month+day are returned."""
+        from app.models.memory import Memory
+
+        now = datetime.now(timezone.utc)
+        one_year_ago = _same_day_in_year(now, now.year - 1)
+        mem = Memory(
+            title="Last year", content="Old memory",
+            captured_at=one_year_ago,
+        )
+        session.add(mem)
+        session.commit()
+
+        resp = client.get("/api/memories/on-this-day")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) >= 1
+        assert any(m["id"] == mem.id for m in data)
+
+    def test_on_this_day_excludes_current_year(self, client, session):
+        """Memories from the current year are NOT returned."""
+        from app.models.memory import Memory
+
+        now = datetime.now(timezone.utc)
+        mem = Memory(
+            title="This year", content="Recent",
+            captured_at=now,
+        )
+        session.add(mem)
+        session.commit()
+
+        resp = client.get("/api/memories/on-this-day")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert not any(m["id"] == mem.id for m in data)
+
+    def test_on_this_day_excludes_different_day(self, client, session):
+        """Memories from a different day are NOT returned."""
+        from app.models.memory import Memory
+
+        now = datetime.now(timezone.utc)
+        last_year = _same_day_in_year(now, now.year - 1)
+        # Pick a different day in the same month to avoid month rollover at
+        # end-of-month boundaries (the old +5 days could cross into the next
+        # month, weakening the assertion).
+        max_day = calendar.monthrange(last_year.year, last_year.month)[1]
+        alt_day = (last_year.day % max_day) + 1  # guaranteed != last_year.day
+        different_day = last_year.replace(day=alt_day)
+        mem = Memory(
+            title="Different day", content="Wrong day",
+            captured_at=different_day,
+        )
+        session.add(mem)
+        session.commit()
+
+        resp = client.get("/api/memories/on-this-day")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert not any(m["id"] == mem.id for m in data)
+
+    def test_on_this_day_empty_returns_empty_list(self, client):
+        """When no memories match, return an empty list (not 404)."""
+        resp = client.get("/api/memories/on-this-day")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_on_this_day_ordered_by_year_descending(self, client, session):
+        """Results are ordered by year descending (most recent first)."""
+        from app.models.memory import Memory
+
+        now = datetime.now(timezone.utc)
+        mem_2yr = Memory(
+            title="Two years ago", content="Older",
+            captured_at=_same_day_in_year(now, now.year - 2),
+        )
+        mem_1yr = Memory(
+            title="One year ago", content="Newer",
+            captured_at=_same_day_in_year(now, now.year - 1),
+        )
+        session.add_all([mem_2yr, mem_1yr])
+        session.commit()
+
+        resp = client.get("/api/memories/on-this-day")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) >= 2
+        years = [d["captured_at"][:4] for d in data]
+        assert years == sorted(years, reverse=True)
+
+    def test_on_this_day_limits_to_10(self, client, session):
+        """At most 10 memories are returned."""
+        from app.models.memory import Memory
+
+        now = datetime.now(timezone.utc)
+        for i in range(1, 15):
+            year = now.year - i
+            if year < 1:
+                break
+            mem = Memory(
+                title=f"Year {year}", content=f"Content {year}",
+                captured_at=_same_day_in_year(now, year),
+            )
+            session.add(mem)
+        session.commit()
+
+        resp = client.get("/api/memories/on-this-day")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) <= 10
+
+    def test_on_this_day_filters_by_visibility(self, client, session):
+        """Private memories are excluded when default visibility='public' is used."""
+        from app.models.memory import Memory
+
+        now = datetime.now(timezone.utc)
+        one_year_ago = _same_day_in_year(now, now.year - 1)
+        private_mem = Memory(
+            title="Private old", content="Secret",
+            captured_at=one_year_ago,
+            visibility="private",
+        )
+        public_mem = Memory(
+            title="Public old", content="Open",
+            captured_at=one_year_ago,
+            visibility="public",
+        )
+        session.add_all([private_mem, public_mem])
+        session.commit()
+
+        # Default (public) — private memory should NOT appear
+        resp = client.get("/api/memories/on-this-day")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert public_mem.id in ids
+        assert private_mem.id not in ids
+
+        # Explicit private — only private memory should appear
+        resp = client.get("/api/memories/on-this-day?visibility=private")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert private_mem.id in ids
+        assert public_mem.id not in ids
+
+        # All — both should appear
+        resp = client.get("/api/memories/on-this-day?visibility=all")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [m["id"] for m in data]
+        assert public_mem.id in ids
+        assert private_mem.id in ids
+
+    def test_on_this_day_requires_auth(self, client_no_auth):
+        """The endpoint returns 403 without auth."""
+        resp = client_no_auth.get("/api/memories/on-this-day")
+        assert resp.status_code == 403
