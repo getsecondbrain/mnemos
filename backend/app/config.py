@@ -18,16 +18,26 @@ class Settings(BaseSettings):
     domain: str = "localhost"
     auth_salt: str = ""
     jwt_secret: str = ""  # Dedicated JWT signing secret — NEVER share with clients
+    allow_insecure_jwt: bool = False
 
     @model_validator(mode="after")
     def _check_jwt_secret(self) -> Settings:
+        self.jwt_secret = self.jwt_secret.strip()
         if not self.jwt_secret:
-            warnings.warn(
-                "JWT_SECRET is not set — JWT signing will use an empty key. "
-                "Run scripts/init.sh or set JWT_SECRET in .env",
-                stacklevel=2,
-            )
+            if self.allow_insecure_jwt:
+                warnings.warn(
+                    "JWT_SECRET is empty but ALLOW_INSECURE_JWT is set — "
+                    "this is INSECURE and should only be used for development.",
+                    stacklevel=2,
+                )
+            else:
+                raise ValueError(
+                    "JWT_SECRET is not set. An empty JWT secret allows attackers to "
+                    "forge session tokens. Set JWT_SECRET in .env (run scripts/init.sh "
+                    "to auto-generate) or set ALLOW_INSECURE_JWT=1 for development."
+                )
         return self
+
     qdrant_url: str = "http://qdrant:6333"
     ollama_url: str = "http://ollama:11434"
     llm_model: str = "llama3.2"
