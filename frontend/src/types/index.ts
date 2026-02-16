@@ -216,3 +216,17 @@ export interface MemoryTag {
   tag_color: string | null;
   created_at: string;
 }
+
+/** Matches backend SuggestionRead schema */
+export interface Suggestion {
+  id: string;
+  memory_id: string;
+  suggestion_type: string;
+  content_encrypted: string;
+  content_dek: string;
+  encryption_algo: string;
+  encryption_version: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}

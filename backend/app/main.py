@@ -11,7 +11,7 @@ import app.models  # noqa: F401 — register SQLModel tables
 
 from app.config import get_settings
 from app.db import create_db_and_tables
-from app.routers import admin, auth, backup, chat, cortex, export, health, heartbeat, ingest, memories, search, tags, testament, vault
+from app.routers import admin, auth, backup, chat, cortex, export, health, heartbeat, ingest, memories, search, suggestions, tags, testament, vault
 from app.worker import BackgroundWorker
 
 
@@ -235,3 +235,4 @@ app.include_router(testament.router)
 app.include_router(testament.ws_router)
 app.include_router(backup.router)
 app.include_router(export.router)
+app.include_router(suggestions.router)

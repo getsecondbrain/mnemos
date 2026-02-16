@@ -16,6 +16,7 @@ import type {
   TagCreate,
   TagUpdate,
   MemoryTag,
+  Suggestion,
 } from "../types";
 
 const BASE_URL = "/api";
@@ -549,6 +550,31 @@ export async function exportAllData(): Promise<Blob> {
     throw new ApiError(res.status, text);
   }
   return res.blob();
+}
+
+// --- Suggestion endpoints ---------------------------------------------------
+
+export async function getSuggestions(params?: {
+  skip?: number;
+  limit?: number;
+}): Promise<Suggestion[]> {
+  const query = new URLSearchParams();
+  if (params?.skip != null) query.set("skip", String(params.skip));
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return request<Suggestion[]>(`/suggestions${qs ? `?${qs}` : ""}`);
+}
+
+export async function acceptSuggestion(id: string): Promise<Suggestion> {
+  return request<Suggestion>(`/suggestions/${id}/accept`, {
+    method: "POST",
+  });
+}
+
+export async function dismissSuggestion(id: string): Promise<Suggestion> {
+  return request<Suggestion>(`/suggestions/${id}/dismiss`, {
+    method: "POST",
+  });
 }
 
 // --- Health -----------------------------------------------------------------
