@@ -43,7 +43,7 @@ export default function MemoryCardMenu({
   }, [isOpen]);
 
   return (
-    <div ref={menuRef} className="relative" onClick={(e) => e.stopPropagation()}>
+    <div ref={menuRef} className="relative" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
       <button
         type="button"
         onClick={(e) => {
@@ -61,6 +61,7 @@ export default function MemoryCardMenu({
           <button
             type="button"
             onClick={(e) => {
+              e.preventDefault();
               e.stopPropagation();
               if (onEdit) {
                 onEdit();
@@ -76,6 +77,7 @@ export default function MemoryCardMenu({
           <button
             type="button"
             onClick={(e) => {
+              e.preventDefault();
               e.stopPropagation();
               onVisibilityChange(memoryId, visibility === "public" ? "private" : "public");
               setIsOpen(false);
@@ -88,6 +90,7 @@ export default function MemoryCardMenu({
             type="button"
             disabled={deleting}
             onClick={async (e) => {
+              e.preventDefault();
               e.stopPropagation();
               setIsOpen(false);
               try {

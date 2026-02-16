@@ -5,6 +5,7 @@ import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
 import MemoryCardMenu from "./MemoryCardMenu";
+import ConfirmModal from "./ConfirmModal";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
 import type { SourceMeta } from "../services/api";
 
@@ -61,6 +62,7 @@ export default function MemoryDetail() {
   const [editContent, setEditContent] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const [editingDate, setEditingDate] = useState(false);
   const [editCapturedAt, setEditCapturedAt] = useState("");
@@ -337,12 +339,12 @@ export default function MemoryDetail() {
     }
   }
 
-  async function handleDelete() {
-    if (!id) return;
-    if (!window.confirm("Are you sure you want to delete this memory? This cannot be undone.")) {
-      return;
-    }
+  function handleDelete() {
+    setShowDeleteConfirm(true);
+  }
 
+  async function confirmDelete() {
+    if (!id) return;
     setDeleting(true);
     try {
       await deleteMemory(id);
@@ -350,6 +352,7 @@ export default function MemoryDetail() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete memory.");
       setDeleting(false);
+      setShowDeleteConfirm(false);
     }
   }
 
@@ -740,6 +743,17 @@ export default function MemoryDetail() {
 
         {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
       </div>
+
+      <ConfirmModal
+        open={showDeleteConfirm}
+        title="Delete Memory"
+        message="Are you sure you want to delete this memory? This cannot be undone."
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        loading={deleting}
+        onConfirm={confirmDelete}
+        onCancel={() => { setShowDeleteConfirm(false); setDeleting(false); }}
+      />
     </div>
   );
 }

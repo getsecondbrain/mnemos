@@ -7,6 +7,7 @@ import { hexToBuffer } from "../services/crypto";
 import type { Memory } from "../types";
 import QuickCapture from "./QuickCapture";
 import MemoryCardMenu from "./MemoryCardMenu";
+import ConfirmModal from "./ConfirmModal";
 
 function Thumbnail({ sourceId }: { sourceId: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -171,6 +172,9 @@ export default function Timeline() {
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [showPrivate, setShowPrivate] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   // Read tag filter from URL params
   const selectedTagId = searchParams.get("tag") || null;
@@ -222,10 +226,10 @@ export default function Timeline() {
   );
 
   const refreshStats = useCallback(() => {
-    return getTimelineStats().then((stats) => {
+    return getTimelineStats({ visibility: showPrivate ? "all" : "public" }).then((stats) => {
       if (mountedRef.current) setTimelineStats(stats);
     }).catch(() => {});
-  }, []);
+  }, [showPrivate]);
 
   useEffect(() => {
     refreshStats();
@@ -234,7 +238,7 @@ export default function Timeline() {
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedYear, selectedTagId]);
+  }, [selectedYear, selectedTagId, showPrivate]);
 
   async function loadInitial(options?: { background?: boolean }) {
     // Cancel any in-flight loadInitial request to prevent race conditions
@@ -256,6 +260,7 @@ export default function Timeline() {
         year: selectedYear ?? undefined,
         tag_ids: selectedTagId ? [selectedTagId] : undefined,
         order_by: "captured_at",
+        visibility: showPrivate ? "all" : "public",
       });
       if (abortController.signal.aborted || !mountedRef.current) return;
       const decrypted = await decryptMemories(data);
@@ -326,6 +331,7 @@ export default function Timeline() {
         year: selectedYear ?? undefined,
         tag_ids: selectedTagId ? [selectedTagId] : undefined,
         order_by: "captured_at",
+        visibility: showPrivate ? "all" : "public",
       });
       // If filters changed while we were fetching, discard the stale results
       if (loadInitialInFlightRef.current) return;
@@ -341,25 +347,39 @@ export default function Timeline() {
     }
   }
 
-  async function handleDeleteMemory(memoryId: string) {
-    if (!window.confirm("Are you sure you want to delete this memory? This cannot be undone.")) {
-      return;
-    }
+  function handleDeleteMemory(memoryId: string) {
+    setDeleteTarget(memoryId);
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
     try {
-      await deleteMemory(memoryId);
-      setMemories((prev) => prev.filter((m) => m.id !== memoryId));
+      await deleteMemory(deleteTarget);
+      setMemories((prev) => prev.filter((m) => m.id !== deleteTarget));
       refreshStats();
+      setDeleteTarget(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete memory.");
+      setDeleteTarget(null);
+    } finally {
+      setDeleting(false);
     }
   }
 
   async function handleVisibilityChange(memoryId: string, newVisibility: string) {
     try {
       const updated = await updateMemory(memoryId, { visibility: newVisibility });
-      setMemories((prev) =>
-        prev.map((m) => (m.id === memoryId ? { ...m, visibility: updated.visibility } : m))
-      );
+      setMemories((prev) => {
+        // If we're not showing private memories and the memory was just made private,
+        // remove it from the displayed list instead of showing a stale entry
+        if (!showPrivate && updated.visibility === "private") {
+          return prev.filter((m) => m.id !== memoryId);
+        }
+        return prev.map((m) => (m.id === memoryId ? { ...m, visibility: updated.visibility } : m));
+      });
+      // Refresh stats since visibility affects counts
+      refreshStats();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update visibility.");
     }
@@ -459,6 +479,27 @@ export default function Timeline() {
             />
           </svg>
         </button>
+        <button
+          onClick={() => setShowPrivate((prev) => !prev)}
+          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
+            showPrivate
+              ? "bg-blue-600/20 text-blue-400 border border-blue-500/30"
+              : "text-gray-500 hover:text-gray-300"
+          }`}
+          title={showPrivate ? "Showing all memories" : "Show private memories"}
+        >
+          {showPrivate ? (
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+            </svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L6.59 6.59m7.532 7.532l3.29 3.29M3 3l18 18" />
+            </svg>
+          )}
+          {showPrivate ? "Showing all" : "Show private"}
+        </button>
       </div>
 
       {/* Timeline bar */}
@@ -511,6 +552,14 @@ export default function Timeline() {
                       <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
                         {memory.content_type}
                       </span>
+                      {memory.visibility === "private" && (
+                        <span className="text-xs bg-gray-800 text-yellow-500 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                          </svg>
+                          Private
+                        </span>
+                      )}
                       <MemoryCardMenu
                         memoryId={memory.id}
                         visibility={memory.visibility}
@@ -589,6 +638,17 @@ export default function Timeline() {
           </button>
         </div>
       )}
+
+      <ConfirmModal
+        open={deleteTarget !== null}
+        title="Delete Memory"
+        message="Are you sure you want to delete this memory? This cannot be undone."
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        loading={deleting}
+        onConfirm={confirmDelete}
+        onCancel={() => { setDeleteTarget(null); setDeleting(false); }}
+      />
     </div>
   );
 }
