@@ -1,62 +1,33 @@
-# Audit Report — P7.2
+# Audit Report — P7.3
 
 ```json
 {
-  "high": [
-    {
-      "file": "backend/app/routers/memories.py",
-      "line": 300,
-      "issue": "FK violation when deleting a memory created via file ingest: `DELETE FROM sources WHERE memory_id = :mid` will fail with IntegrityError when the memory's `source_id` column references the source being deleted (`memories.source_id REFERENCES sources.id`), because `PRAGMA foreign_keys=ON` is set in db.py and FK checks are immediate (not deferred). The fix is to NULL out `memory.source_id` before deleting sources, e.g. `session.execute(sa_text('UPDATE memories SET source_id = NULL WHERE id = :mid'), {'mid': memory_id})` before the sources DELETE. This affects any memory created through the ingest pipeline (which sets `memory.source_id = source.id`).",
-      "category": "logic"
-    }
-  ],
+  "high": [],
   "medium": [
-    {
-      "file": "backend/tests/conftest.py",
-      "line": 75,
-      "issue": "The `client` fixture does not override `get_vault_service`, but `delete_memory` now depends on `VaultService = Depends(get_vault_service)`. The real `get_vault_service()` runs in tests and creates a vault key in the test temp dir — this works incidentally for tests without sources, but means all tests using the `client` fixture (including unrelated ones) now create unnecessary vault key files on disk and depend on the real vault infrastructure path. A vault service override should be added to the `client` fixture for consistency and test isolation.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "backend/tests/test_memories.py",
-      "line": 269,
-      "issue": "No test covers deleting a memory that has `source_id` set (i.e., a memory created via ingest). All cascade tests create the Source manually without setting `memory.source_id`, so the FK violation from the HIGH issue above is never exercised. A test should create a memory with `source_id=source.id` to catch this.",
-      "category": "logic"
-    },
-    {
-      "file": "backend/app/routers/memories.py",
-      "line": 265,
-      "issue": "The Source query `select(Source).where(Source.memory_id == memory_id)` loads Source ORM objects into the session identity map. After the raw SQL `DELETE FROM sources` at line 301, these objects become stale (DB rows deleted, ORM doesn't know). While this doesn't cause immediate errors in the current flow, any future code that accesses these objects after the raw DELETE (e.g., in error handling or logging) could trigger unexpected DetachedInstanceError or stale data issues. Consider using `session.expire_all()` after the raw SQL deletes, or just query the vault paths via raw SQL instead of ORM objects.",
-      "category": "error-handling"
-    }
+    {"file": "frontend/src/components/MemoryCardMenu.tsx", "line": 80, "issue": "onVisibilityChange is called but not awaited — the returned Promise is silently ignored. If the async callback throws, the error becomes an unhandled promise rejection rather than being caught by the parent's try/catch. While the parent does handle errors internally, the fire-and-forget pattern means any error thrown before the try/catch (e.g., a synchronous throw in the callback signature mismatch scenario) would be unhandled.", "category": "error-handling"},
+    {"file": "frontend/src/components/MemoryCardMenu.tsx", "line": 92, "issue": "setIsOpen(false) is called BEFORE await onDelete(memoryId). If onDelete shows window.confirm and the user cancels, the menu is already closed — this is acceptable UX but means the user loses context. More importantly, if the parent's onDelete itself throws before the confirmation (e.g., if the parent has a guard check that throws), the catch block silently swallows it.", "category": "error-handling"},
+    {"file": "frontend/src/components/MemoryDetail.tsx", "line": 496, "issue": "memoryId is passed as id! (non-null assertion). If the component somehow renders the non-editing, non-loading, non-error state with id being undefined (shouldn't happen given the guards above, but the assertion bypasses TypeScript safety), it would pass 'undefined' as a string to the menu.", "category": "logic"}
   ],
   "low": [
-    {
-      "file": "backend/app/routers/memories.py",
-      "line": 270,
-      "issue": "vault_paths list appends `src.vault_path` unconditionally (line 270), but only conditionally appends `src.preserved_vault_path` (line 271-272 checks for truthiness). If `vault_path` were ever an empty string (technically valid per the model since it's `str` with no validator), `vault_service.delete_file('')` would attempt to unlink the vault root directory itself. The `_safe_path` check passes for empty string (resolves to vault_root, which equals vault_root), but `unlink` would raise IsADirectoryError — caught by the except. Very low likelihood since vault_path is always set by store_file, but a `if vp:` guard in the loop would be defensive.",
-      "category": "logic"
-    },
-    {
-      "file": "backend/app/routers/memories.py",
-      "line": 298,
-      "issue": "Inline import `from sqlalchemy import text as sa_text` inside the function body. This import exists in the function presumably to avoid circular imports, but `sqlalchemy.text` has no circular dependency risk — it could be moved to the top-level imports for clarity. Pre-existing style issue, not introduced by P7.2.",
-      "category": "style"
-    }
+    {"file": "frontend/src/components/MemoryCardMenu.tsx", "line": 56, "issue": "The three-dot trigger uses the Unicode character ⋮ (U+22EE) which may render inconsistently across platforms/fonts. An SVG icon would be more reliable for visual consistency in the dark theme.", "category": "inconsistency"},
+    {"file": "frontend/src/components/MemoryCardMenu.tsx", "line": 46, "issue": "The wrapper div has onClick stopPropagation AND the button inside also has stopPropagation. The wrapper's stopPropagation is redundant for the button click but is needed for clicks on the dropdown menu items. This is correct but the double-stop on the button path is unnecessary — not a bug, just minor redundancy.", "category": "style"},
+    {"file": "frontend/src/components/MemoryCardMenu.tsx", "line": 60, "issue": "Dropdown uses absolute positioning with right-0, which works when the menu is inside a container with sufficient right margin. On very narrow viewports, the 12rem (w-48) dropdown could overflow the left edge of the screen if the card is narrow. Consider adding a min-width guard or left-0 fallback for mobile.", "category": "inconsistency"},
+    {"file": "frontend/src/components/MemoryDetail.tsx", "line": 394, "issue": "handleVisibilityChange has _memoryId parameter (unused, prefixed with underscore) since it uses id from useParams instead. This is intentional and correct but creates a subtle contract mismatch — the function signature matches onVisibilityChange prop type but ignores the memoryId argument.", "category": "style"}
   ],
   "validated": [
-    "VaultService.delete_file() at vault.py:243 uses `unlink(missing_ok=True)` — safe for already-missing files",
-    "VaultService.delete_file() calls `_safe_path()` which validates against path traversal — vault paths from Source records cannot escape vault root",
-    "Vault file deletion is per-file with try/except (memories.py:287-295) — one failure doesn't block other deletions or DB cleanup",
-    "EmbeddingService.delete_memory_vectors() at embedding.py:133 already exists and uses correct Qdrant filter by memory_id — no new method needed",
-    "delete_memory_vectors is awaited correctly (memories.py:323) and its best-effort error handling is correct",
-    "Vault paths are collected BEFORE the raw SQL `DELETE FROM sources` — no data loss from reading vault_path after source rows are deleted",
-    "The three new test classes properly clean up dependency_overrides in finally blocks and reset app.state.embedding_service to None",
-    "mock_embedding_service fixture (conftest.py:215) already has `delete_memory_vectors = AsyncMock()` — compatible with the await in the delete endpoint",
-    "The `get_vault_service` dependency in `dependencies.py:69` is a sync function returning VaultService — compatible with FastAPI sync dependency injection",
-    "Test test_delete_memory_with_no_sources (line 394) verifies the no-sources edge case doesn't crash",
-    "Test test_delete_memory_succeeds_when_vault_delete_fails (line 333) verifies error resilience with mock that raises OSError",
-    "Test uses session.expire_all() before final assertion (line 388) to avoid stale ORM cache giving false positive"
+    "MemoryCardMenu component correctly implements click-outside detection using mousedown event and useRef pattern matching TagInput.tsx",
+    "Escape key handler is properly guarded by isOpen state — listener only attached when menu is open, cleaned up when closed",
+    "Event propagation is correctly stopped on all interactive elements to prevent parent Link navigation in Timeline cards",
+    "Edit action correctly uses optional onEdit prop — calls navigate() in Timeline context, calls startEditing() in MemoryDetail context",
+    "Delete handler in Timeline correctly removes the memory from local state and refreshes stats after successful API call",
+    "Visibility toggle correctly computes the opposite state (public→private, private→public) and updates local state from API response",
+    "Old Edit/Delete button row at bottom of MemoryDetail has been properly removed — all actions now in MemoryCardMenu dropdown",
+    "Multiple simultaneous menus are handled correctly — each instance has independent isOpen state, click-outside closes the first when clicking the second",
+    "TypeScript types match: MemoryCardMenu props align with Memory.visibility (string), onDelete signatures are compatible (Timeline passes (string)=>Promise<void>, MemoryDetail passes ()=>Promise<void> which is assignable)",
+    "The deleting prop is correctly threaded from MemoryDetail to MemoryCardMenu, disabling the Delete button during deletion",
+    "handleDeleteMemory in Timeline correctly uses window.confirm before API call, matching the plan specification",
+    "handleVisibilityChange in both Timeline and MemoryDetail correctly calls updateMemory API and updates local state from the response",
+    "Component imports are correct — MemoryCardMenu imported in both Timeline.tsx and MemoryDetail.tsx, deleteMemory and updateMemory imported in api.ts"
   ]
 }
 ```

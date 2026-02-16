@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { listMemories, fetchVaultFile, getTimelineStats } from "../services/api";
+import { listMemories, fetchVaultFile, getTimelineStats, deleteMemory, updateMemory } from "../services/api";
 import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
 import type { Memory } from "../types";
 import QuickCapture from "./QuickCapture";
+import MemoryCardMenu from "./MemoryCardMenu";
 
 function Thumbnail({ sourceId }: { sourceId: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -279,7 +280,7 @@ export default function Timeline() {
   loadInitialRef.current = loadInitial;
 
   useEffect(() => {
-    function handleVisibilityChange() {
+    function handleDocVisibilityChange() {
       if (document.visibilityState === "visible" && mountedRef.current) {
         if (refreshInFlightRef.current) return;
         refreshInFlightRef.current = true;
@@ -291,9 +292,9 @@ export default function Timeline() {
         });
       }
     }
-    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("visibilitychange", handleDocVisibilityChange);
     return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("visibilitychange", handleDocVisibilityChange);
     };
   }, [refreshStats]);
 
@@ -337,6 +338,30 @@ export default function Timeline() {
       setError(err instanceof Error ? err.message : "Failed to load more memories.");
     } finally {
       setLoadingMore(false);
+    }
+  }
+
+  async function handleDeleteMemory(memoryId: string) {
+    if (!window.confirm("Are you sure you want to delete this memory? This cannot be undone.")) {
+      return;
+    }
+    try {
+      await deleteMemory(memoryId);
+      setMemories((prev) => prev.filter((m) => m.id !== memoryId));
+      refreshStats();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete memory.");
+    }
+  }
+
+  async function handleVisibilityChange(memoryId: string, newVisibility: string) {
+    try {
+      const updated = await updateMemory(memoryId, { visibility: newVisibility });
+      setMemories((prev) =>
+        prev.map((m) => (m.id === memoryId ? { ...m, visibility: updated.visibility } : m))
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update visibility.");
     }
   }
 
@@ -482,9 +507,17 @@ export default function Timeline() {
                     <h3 className="text-gray-100 font-semibold truncate">
                       {memory.title}
                     </h3>
-                    <span className="shrink-0 text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
-                      {memory.content_type}
-                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
+                        {memory.content_type}
+                      </span>
+                      <MemoryCardMenu
+                        memoryId={memory.id}
+                        visibility={memory.visibility}
+                        onDelete={handleDeleteMemory}
+                        onVisibilityChange={handleVisibilityChange}
+                      />
+                    </div>
                   </div>
                   <p className="text-gray-400 text-sm mt-1 line-clamp-2">
                     {memory.content.length > 150

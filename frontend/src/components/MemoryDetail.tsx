@@ -4,6 +4,7 @@ import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, a
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
+import MemoryCardMenu from "./MemoryCardMenu";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
 import type { SourceMeta } from "../services/api";
 
@@ -390,6 +391,16 @@ export default function MemoryDetail() {
     setError(null);
   }
 
+  async function handleVisibilityChange(_memoryId: string, newVisibility: string) {
+    if (!id || !memory) return;
+    try {
+      const updated = await updateMemory(id, { visibility: newVisibility });
+      setMemory(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update visibility.");
+    }
+  }
+
   if (loading) {
     return <p className="text-gray-400">Loading...</p>;
   }
@@ -477,9 +488,19 @@ export default function MemoryDetail() {
       <div className="mt-4">
         <div className="flex items-start justify-between gap-3">
           <h1 className="text-2xl font-bold text-gray-100">{displayTitle}</h1>
-          <span className="shrink-0 text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
-            {memory.content_type}
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
+              {memory.content_type}
+            </span>
+            <MemoryCardMenu
+              memoryId={id!}
+              visibility={memory.visibility}
+              onDelete={handleDelete}
+              onVisibilityChange={handleVisibilityChange}
+              onEdit={startEditing}
+              deleting={deleting}
+            />
+          </div>
         </div>
 
         <div className="flex items-center gap-2 mt-1">
@@ -716,22 +737,6 @@ export default function MemoryDetail() {
             </div>
           </div>
         ) : null}
-
-        <div className="mt-8 flex gap-3">
-          <button
-            onClick={startEditing}
-            className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-md transition-colors"
-          >
-            Edit
-          </button>
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-md transition-colors"
-          >
-            {deleting ? "Deleting..." : "Delete"}
-          </button>
-        </div>
 
         {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
       </div>
