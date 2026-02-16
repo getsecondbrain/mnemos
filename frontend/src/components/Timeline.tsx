@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
-import { listMemories, listTags, fetchVaultFile, getTimelineStats } from "../services/api";
+import { listMemories, fetchVaultFile, getTimelineStats } from "../services/api";
 import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
-import type { Memory, Tag } from "../types";
+import type { Memory } from "../types";
 
 function Thumbnail({ sourceId }: { sourceId: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -166,8 +166,6 @@ export default function Timeline() {
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [allTags, setAllTags] = useState<Tag[]>([]);
-  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -221,14 +219,13 @@ export default function Timeline() {
   }, []);
 
   useEffect(() => {
-    listTags().then(setAllTags).catch(() => {});
     refreshStats();
   }, [refreshStats]);
 
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTagIds, selectedYear]);
+  }, [selectedYear]);
 
   async function loadInitial(options?: { background?: boolean }) {
     const isBackground = options?.background ?? false;
@@ -239,7 +236,6 @@ export default function Timeline() {
     try {
       const data = await listMemories({
         limit: PAGE_SIZE,
-        tag_ids: selectedTagIds.length > 0 ? selectedTagIds : undefined,
         year: selectedYear ?? undefined,
         order_by: "captured_at",
       });
@@ -304,7 +300,6 @@ export default function Timeline() {
       const data = await listMemories({
         skip: memories.length,
         limit: PAGE_SIZE,
-        tag_ids: selectedTagIds.length > 0 ? selectedTagIds : undefined,
         year: selectedYear ?? undefined,
         order_by: "captured_at",
       });
@@ -415,46 +410,9 @@ export default function Timeline() {
         />
       )}
 
-      {/* Tag filter */}
-      {allTags.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2">
-          {allTags.map((tag) => {
-            const isSelected = selectedTagIds.includes(tag.id);
-            return (
-              <button
-                key={tag.id}
-                onClick={() => {
-                  setSelectedTagIds((prev) =>
-                    isSelected
-                      ? prev.filter((tid) => tid !== tag.id)
-                      : [...prev, tag.id],
-                  );
-                }}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  isSelected
-                    ? "ring-2 ring-blue-400 text-white"
-                    : "text-gray-300 opacity-60 hover:opacity-100"
-                }`}
-                style={{ backgroundColor: tag.color || "#4b5563" }}
-              >
-                {tag.name}
-              </button>
-            );
-          })}
-          {selectedTagIds.length > 0 && (
-            <button
-              onClick={() => setSelectedTagIds([])}
-              className="px-3 py-1 rounded-full text-xs font-medium text-gray-400 hover:text-gray-200 bg-gray-800 transition-colors"
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
-      )}
-
       {memories.length === 0 ? (
         <p className="text-gray-500 text-center py-8">
-          No memories{selectedYear ? ` from ${selectedYear}` : ""}{selectedTagIds.length > 0 ? " matching filters" : ""}.
+          No memories{selectedYear ? ` from ${selectedYear}` : ""}.
         </p>
       ) : (
         <div className="space-y-4">
@@ -482,9 +440,29 @@ export default function Timeline() {
                       ? `${memory.content.slice(0, 150)}...`
                       : memory.content}
                   </p>
-                  <p className="text-gray-500 text-xs mt-2">
-                    {formatDate(memory.captured_at)}
-                  </p>
+                  <div className="flex items-center gap-2 mt-2">
+                    <p className="text-gray-500 text-xs">
+                      {formatDate(memory.captured_at)}
+                    </p>
+                    {memory.tags && memory.tags.length > 0 && (
+                      <div className="flex gap-1 overflow-hidden">
+                        {memory.tags.slice(0, 3).map((tag) => (
+                          <span
+                            key={tag.tag_id}
+                            className="px-1.5 py-0.5 rounded text-[10px] font-medium text-white truncate max-w-[100px]"
+                            style={{ backgroundColor: tag.tag_color || "#4b5563" }}
+                          >
+                            {tag.tag_name}
+                          </span>
+                        ))}
+                        {memory.tags.length > 3 && (
+                          <span className="text-[10px] text-gray-500">
+                            +{memory.tags.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </Link>

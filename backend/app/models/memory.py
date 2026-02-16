@@ -74,6 +74,12 @@ class MemoryUpdate(BaseModel):
     encryption_version: int | None = None
 
 
+class MemoryTagInfo(BaseModel):
+    tag_id: str
+    tag_name: str
+    tag_color: str | None
+
+
 class MemoryRead(BaseModel):
     id: str
     created_at: datetime
@@ -92,5 +98,6 @@ class MemoryRead(BaseModel):
     content_dek: str | None
     encryption_algo: str
     encryption_version: int
+    tags: list[MemoryTagInfo] = []
 
     model_config = {"from_attributes": True}

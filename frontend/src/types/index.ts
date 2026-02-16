@@ -16,6 +16,7 @@ export interface Memory {
   content_dek: string | null;
   encryption_algo: string | null;
   encryption_version: number | null;
+  tags?: { tag_id: string; tag_name: string; tag_color: string | null }[];
 }
 
 /** Matches backend MemoryCreate schema */

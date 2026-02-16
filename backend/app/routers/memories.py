@@ -9,14 +9,37 @@ from sqlmodel import Session, func, select
 from app.config import get_settings
 from app.db import get_session
 from app.dependencies import get_encryption_service, require_auth
-from app.models.memory import Memory, MemoryCreate, MemoryRead, MemoryUpdate
-from app.models.tag import MemoryTag
+from app.models.memory import Memory, MemoryCreate, MemoryRead, MemoryTagInfo, MemoryUpdate
+from app.models.tag import MemoryTag, Tag
 from app.services.encryption import EncryptedEnvelope, EncryptionService
 from app.services.git_ops import GitOpsService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
+
+
+def _attach_tags(memories: list[Memory], session: Session) -> list[MemoryRead]:
+    """Convert Memory models to MemoryRead with tags populated."""
+    if not memories:
+        return []
+    memory_ids = [m.id for m in memories]
+    rows = session.exec(
+        select(MemoryTag.memory_id, Tag.id, Tag.name, Tag.color)
+        .join(Tag, MemoryTag.tag_id == Tag.id)  # type: ignore[arg-type]
+        .where(MemoryTag.memory_id.in_(memory_ids))  # type: ignore[union-attr]
+    ).all()
+    tags_by_memory: dict[str, list[MemoryTagInfo]] = {}
+    for mid, tid, tname, tcolor in rows:
+        tags_by_memory.setdefault(mid, []).append(
+            MemoryTagInfo(tag_id=tid, tag_name=tname, tag_color=tcolor)
+        )
+    result = []
+    for m in memories:
+        read = MemoryRead.model_validate(m)
+        read.tags = tags_by_memory.get(m.id, [])
+        result.append(read)
+    return result
 
 
 @router.post("", response_model=MemoryRead, status_code=201)
@@ -156,7 +179,8 @@ async def list_memories(
             .having(func.count(func.distinct(MemoryTag.tag_id)) == len(tag_ids))
         )
     statement = statement.offset(skip).limit(limit)
-    return list(session.exec(statement).all())
+    memories = list(session.exec(statement).all())
+    return _attach_tags(memories, session)
 
 
 @router.get("/{memory_id}", response_model=MemoryRead)
@@ -164,11 +188,11 @@ async def get_memory(
     memory_id: str,
     _session_id: str = Depends(require_auth),
     session: Session = Depends(get_session),
-) -> Memory:
+) -> MemoryRead:
     memory = session.get(Memory, memory_id)
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
-    return memory
+    return _attach_tags([memory], session)[0]
 
 
 @router.put("/{memory_id}", response_model=MemoryRead)
