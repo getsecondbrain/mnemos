@@ -1,53 +1,54 @@
-# Audit Report — D9.6
+# Audit Report — D9.7
 
 ```json
 {
-  "high": [],
+  "high": [
+    {
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 44,
+      "issue": "Layout calls useEncryption() directly instead of reading from useAuthContext(). Each useEncryption() call creates its own independent useState(cryptoInstance.isUnlocked) and its own 15-minute auto-lock timer with activity listeners. This means Layout has a SEPARATE timer running in parallel with the one in useAuth (via AuthContext). When the useAuth timer fires first (calling cryptoInstance.lock() and setting its own isUnlocked=false), useAuth's useEffect (line 211-217) sets isAuthenticated=false, which unmounts Layout via App.tsx. However, Layout's own timer continues running as a detached setTimeout after unmount — calling lock() on an already-locked cryptoInstance and calling setIsUnlocked(false) on an unmounted component's state, which triggers a React state-update-on-unmounted-component warning. The duplicate activity event listeners (mousemove, keydown, click, scroll, touchstart x2 instances) also create unnecessary overhead. Fix: replace useEncryption() in Layout with useAuthContext().isAuthenticated to derive vault status, or expose isUnlocked through the AuthContext to avoid duplicate hook instances.",
+      "category": "race"
+    }
+  ],
   "medium": [
     {
-      "file": "frontend/src/components/MemoryDetail.tsx",
-      "line": 761,
-      "issue": "MemoryLocationMap lazy-load is wrapped in Suspense but NOT in ChunkErrorBoundary, unlike LocationPickerModal (line 851). If the MemoryLocationMap chunk fails to load (network error, deploy race), the error bubbles up to the top-level ErrorBoundary in App.tsx, which replaces the entire page with a full-screen error. The LocationPickerModal correctly uses ChunkErrorBoundary for graceful degradation. MemoryLocationMap should be wrapped in ChunkErrorBoundary too, so a map load failure only shows a localized error box within the memory detail view.",
-      "category": "error-handling"
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 57,
+      "issue": "The aria-live='polite' attribute on the vault indicator means screen readers will announce state changes. However, since the indicator transitions from 'Unlocked' to 'Locked' only at the instant the component unmounts (because App.tsx immediately replaces Layout with Login when isAuthenticated goes false), the announcement will never actually reach the user. The aria-live attribute is correct in principle but non-functional in practice — the element is destroyed before the assistive technology can announce the change. Not blocking, but misleading accessibility markup.",
+      "category": "inconsistency"
     },
     {
-      "file": "frontend/src/App.tsx",
-      "line": 12,
-      "issue": "lazyWithRetry's retry chain uses setTimeout with no cancellation mechanism. While React.lazy caches the factory result so this isn't a memory leak per se, if the factory promise rejects on all retries and the component has already been removed from the tree (e.g., user navigated away), the final throw goes into an uncaught promise rejection. This won't crash the app (React.lazy handles it on next render attempt), but it will produce console noise and could trigger global unhandledrejection handlers if any are installed.",
-      "category": "error-handling"
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 44,
+      "issue": "The plan specified using useAuthContext() for future-proofing (soft lock feature), but the implementation uses useEncryption() directly. This diverges from the plan's stated approach. useEncryption() exposes the raw crypto state, while useAuthContext() would provide the authoritative auth state that accounts for both crypto lock AND JWT expiry. If a future 'soft lock' feature is added where JWT expires but keys remain (or vice versa), the indicator would show incorrect status.",
+      "category": "inconsistency"
     }
   ],
   "low": [
     {
-      "file": "frontend/src/App.tsx",
-      "line": 13,
-      "issue": "lazyWithRetry types the factory return as React.ComponentType<unknown>, erasing component prop types. This works at runtime because React.lazy internally infers the component type from the module, but it means TypeScript won't catch prop mismatches if a lazy-loaded component's props change. A more precise generic signature would preserve type safety: `function lazyWithRetry<T extends React.ComponentType<any>>(factory: () => Promise<{default: T}>)`.",
-      "category": "api-contract"
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 57,
+      "issue": "The vault indicator SVG markup is duplicated 4 times (locked + unlocked icons x2 for mobile + desktop). This could be extracted into a small VaultIndicator component or at minimum a variable, reducing ~40 lines of duplicated SVG paths. The plan itself suggested 'Extract a VaultIndicator inline element... Define it once and use in both mobile and desktop locations' but this was not done.",
+      "category": "style"
     },
     {
-      "file": "frontend/vite.config.ts",
-      "line": 12,
-      "issue": "The plan explicitly stated 'No vite.config.ts changes needed' but manualChunks was added for react-vendor and argon2 separation. This is actually beneficial for cache efficiency (vendor chunks change less frequently), but deviates from the plan. The manualChunks function coexists correctly with React.lazy() dynamic imports — Rollup handles them independently.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "frontend/src/App.tsx",
-      "line": 21,
-      "issue": "Retry delay is hardcoded to 1000ms with no exponential backoff. For transient network issues, a fixed 1-second retry may be too aggressive or too slow. Consider exponential backoff (e.g., 1000 * 2^(retries - remaining)) for production resilience. Minor since the default retry count is only 2.",
-      "category": "hardcoded"
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 91,
+      "issue": "The 'Locked' state (red icon, lines 96-100 and 62-65) is effectively dead code. Layout is only rendered when isAuthenticated is true (App.tsx line 47-55 guards this), and isUnlocked tracks isAuthenticated via useAuth's sync effect. The locked branch will execute for at most one render frame before Layout is unmounted. While the plan acknowledges this ('rarely visible, but correct'), it adds visual noise and untestable code paths.",
+      "category": "style"
     }
   ],
   "validated": [
-    "All 7 lazy-loaded components (Chat, Graph, Heartbeat, Testament, Settings, People, MapView) have correct default exports compatible with React.lazy()",
-    "Suspense boundary is correctly placed INSIDE ErrorBoundary in App.tsx, so chunk load failures after all retries are caught by the error boundary rather than crashing the app",
-    "ErrorBoundary.tsx correctly detects chunk load errors via isChunkLoadError() matching 'Failed to fetch dynamically imported module' and 'Loading chunk' patterns, and offers a 'Reload Page' button",
-    "Eagerly-loaded components (Login, Layout, ErrorBoundary, Capture, Timeline, MemoryDetail, Search) are appropriate choices — they are critical path or frequently visited views",
-    "MemoryLocationMap.tsx was correctly extracted from MemoryDetail.tsx as a new component, removing MemoryDetail's direct dependency on leaflet/react-leaflet — this allows Leaflet to be code-split out of the main bundle",
-    "LocationPickerModal was already a separate file and is now lazy-loaded via React.lazy in MemoryDetail.tsx with ChunkErrorBoundary wrapping for graceful degradation",
-    "manualChunks in vite.config.ts only targets react-dom/react/react-router and argon2-browser — it does not interfere with Rollup's automatic code splitting for dynamic imports (leaflet, d3, etc. are correctly left to automatic splitting)",
-    "The lazyWithRetry wrapper adds resilience for intermittent network failures during chunk loading, with 2 retries and 1-second delay — a sensible addition beyond the plan's simpler React.lazy() approach",
-    "leaflet/dist/leaflet.css imports in MemoryLocationMap.tsx, MapView.tsx, and LocationPickerModal.tsx will be handled correctly by Vite's CSS code splitting — CSS is extracted alongside each async chunk",
-    "No security issues introduced — code splitting is purely a build optimization with no auth/encryption implications"
+    "SVG lock/unlock icons use Heroicons paths consistent with the existing hamburger menu icon in Layout.tsx — styling is consistent",
+    "Indicator uses Tailwind classes only (text-emerald-400, text-red-400, text-xs) — no CSS modules, consistent with project conventions",
+    "Mobile indicator (line 57-68) and desktop indicator (line 91-102) are both present and correctly placed — mobile in top bar next to Logo, desktop in sidebar header below Logo",
+    "The isUnlocked state correctly reflects cryptoInstance.isUnlocked which checks masterKey !== null && kek !== null — this is the authoritative crypto state",
+    "The lock() function in ClientCrypto (crypto.ts line 118-124) zeros out keys before nulling, so the isUnlocked getter transitions atomically",
+    "No new dependencies added — inline SVG icons, no icon library, consistent with plan",
+    "No security issues — the indicator only shows status, it does not expose keys or sensitive data",
+    "The implementation correctly does NOT use localStorage or sessionStorage to persist vault status — state is purely in-memory via the ClientCrypto singleton",
+    "aria-hidden='true' is correctly set on decorative SVG icons so screen readers focus on the text label",
+    "role='status' is appropriate for the indicator container — it identifies the element as a live region showing current status"
   ]
 }
 ```

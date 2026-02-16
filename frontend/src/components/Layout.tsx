@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useOutletContext } from "react-router-dom
 import Logo from "./Logo";
 import FilterPanel, { useFilterTags, useFilterPersons, useFilterSearchParams } from "./FilterPanel";
 import type { FilterState, TagData, PersonData } from "./FilterPanel";
+import { useEncryption } from "../hooks/useEncryption";
 
 export interface LayoutOutletContext {
   filters: FilterState;
@@ -40,6 +41,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
   const tagData = useFilterTags();
   const personData = useFilterPersons();
   const location = useLocation();
+  const { isUnlocked } = useEncryption();
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -50,7 +52,21 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
     <div className="flex flex-col md:flex-row h-screen">
       {/* Mobile top bar */}
       <div className="md:hidden flex items-center justify-between bg-gray-900 border-b border-gray-800 px-4 py-3">
-        <Logo />
+        <div className="flex items-center gap-3">
+          <Logo />
+          <div className={`flex items-center gap-1 text-xs ${isUnlocked ? "text-emerald-400" : "text-red-400"}`} role="status" aria-live="polite">
+            {isUnlocked ? (
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+              </svg>
+            ) : (
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            )}
+            <span>{isUnlocked ? "Unlocked" : "Locked"}</span>
+          </div>
+        </div>
         <button
           onClick={() => setMenuOpen(!menuOpen)}
           className="text-gray-400 hover:text-gray-200 p-1"
@@ -72,6 +88,18 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
       <nav className={`${menuOpen ? "flex" : "hidden"} md:flex w-full md:w-56 bg-gray-900 border-b md:border-b-0 md:border-r border-gray-800 flex-col`}>
         <div className="hidden md:block p-4 border-b border-gray-800">
           <Logo />
+          <div className={`flex items-center gap-1.5 text-xs mt-1.5 ${isUnlocked ? "text-emerald-400" : "text-red-400"}`} role="status" aria-live="polite">
+            {isUnlocked ? (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+              </svg>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            )}
+            <span>{isUnlocked ? "Unlocked" : "Locked"}</span>
+          </div>
         </div>
         <ul className="py-2 space-y-1">
           {navItems.map((item) => (
