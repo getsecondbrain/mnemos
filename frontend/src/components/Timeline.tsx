@@ -359,7 +359,7 @@ export default function Timeline() {
     );
   }
 
-  if (!timelineStats && memories.length === 0) {
+  if (memories.length === 0 && !selectedYear) {
     return (
       <div className="py-6">
         <QuickCapture onMemoryCreated={handleRefresh} />

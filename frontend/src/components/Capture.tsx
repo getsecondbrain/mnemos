@@ -39,11 +39,16 @@ const MAX_UPLOAD_SIZE_MB = 500;
 const validTabIds = new Set<string>(tabs.map((t) => t.id));
 
 export default function Capture() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
   const initialTab: TabId = tabParam && validTabIds.has(tabParam) ? (tabParam as TabId) : "text";
 
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
+
+  function handleTabChange(tab: TabId) {
+    setActiveTab(tab);
+    setSearchParams(tab === "text" ? {} : { tab }, { replace: true });
+  }
   const [uploads, setUploads] = useState<UploadStatusEntry[]>([]);
   const [isImporting, setIsImporting] = useState(false);
 
@@ -204,7 +209,7 @@ export default function Capture() {
         {tabs.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => handleTabChange(tab.id)}
             className={`px-4 py-2 text-sm font-medium rounded-t-md transition-colors ${
               activeTab === tab.id
                 ? "bg-gray-800 text-blue-400 border-b-2 border-blue-400"

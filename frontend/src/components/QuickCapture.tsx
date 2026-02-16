@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent, type KeyboardEvent } from "react";
+import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import { createMemory, createTag, addTagsToMemory, uploadFileWithProgress } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
@@ -29,6 +29,17 @@ export default function QuickCapture({ onMemoryCreated }: QuickCaptureProps) {
   const [error, setError] = useState<string | null>(null);
   const { encrypt } = useEncryption();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
+  // Revoke preview object URLs on unmount
+  useEffect(() => {
+    return () => {
+      for (const att of attachmentsRef.current) {
+        if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      }
+    };
+  }, []);
 
   function handleTagAdd(tag: Tag) {
     if (selectedTags.some((t) => t.tag_id === tag.id)) return;
@@ -98,6 +109,7 @@ export default function QuickCapture({ onMemoryCreated }: QuickCaptureProps) {
 
   async function handleSubmit(e?: FormEvent) {
     e?.preventDefault();
+    if (submitting) return;
 
     const hasText = title.trim() && content.trim();
     const hasFiles = attachments.length > 0;
@@ -129,23 +141,31 @@ export default function QuickCapture({ onMemoryCreated }: QuickCaptureProps) {
         if (selectedTags.length > 0) {
           await addTagsToMemory(created.id, selectedTags.map((t) => t.tag_id));
         }
+        // Text saved — clear so retry won't re-create it
+        setTitle("");
+        setContent("");
+        setSelectedTags([]);
       }
 
       // 2. Upload each attached file as a separate memory
-      for (let i = 0; i < attachments.length; i++) {
-        const att = attachments[i]!;
-        setUploadProgress(`Uploading ${att.file.name} (${i + 1}/${attachments.length})...`);
-        await uploadFileWithProgress(att.file);
-      }
-
-      // Cleanup preview URLs
-      for (const att of attachments) {
+      // Process sequentially; remove each from state after success so
+      // a partial failure won't re-upload already-succeeded files on retry.
+      const remaining = [...attachments];
+      while (remaining.length > 0) {
+        const att = remaining[0]!;
+        const total = attachments.length;
+        const idx = total - remaining.length + 1;
+        setUploadProgress(`Uploading ${att.file.name} (${idx}/${total})...`);
+        const result = await uploadFileWithProgress(att.file);
+        if (selectedTags.length > 0) {
+          await addTagsToMemory(result.memory_id, selectedTags.map((t) => t.tag_id));
+        }
         if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+        remaining.shift();
+        setAttachments([...remaining]);
       }
 
       // Reset and collapse
-      setTitle("");
-      setContent("");
       setSelectedTags([]);
       setAttachments([]);
       setUploadProgress(null);
@@ -173,7 +193,7 @@ export default function QuickCapture({ onMemoryCreated }: QuickCaptureProps) {
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !submitting) {
       void handleSubmit();
     }
   }
