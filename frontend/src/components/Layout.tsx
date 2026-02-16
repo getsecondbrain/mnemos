@@ -1,8 +1,23 @@
 import { useState, useEffect } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useOutletContext } from "react-router-dom";
 import Logo from "./Logo";
-import FilterPanel, { EMPTY_FILTERS, useFilterTags } from "./FilterPanel";
-import type { FilterState } from "./FilterPanel";
+import FilterPanel, { useFilterTags, useFilterSearchParams } from "./FilterPanel";
+import type { FilterState, TagData } from "./FilterPanel";
+
+export interface LayoutOutletContext {
+  filters: FilterState;
+  setFilters: (fs: FilterState) => void;
+  clearAllFilters: () => void;
+  removeContentType: (ct: string) => void;
+  removeDateRange: () => void;
+  removeTagId: (tagId: string) => void;
+  resetVisibility: () => void;
+  tagData: TagData;
+}
+
+export function useLayoutFilters(): LayoutOutletContext {
+  return useOutletContext<LayoutOutletContext>();
+}
 
 const navItems = [
   { to: "/capture", label: "Capture", icon: "+" },
@@ -16,7 +31,7 @@ const navItems = [
 
 export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
+  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility } = useFilterSearchParams();
   const tagData = useFilterTags();
   const location = useLocation();
 
@@ -89,7 +104,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
       <FilterPanel filters={filters} onFilterChange={setFilters} variant="mobile" tagData={tagData} />
 
       <main className="flex-1 overflow-y-auto p-4 md:p-6">
-        <Outlet />
+        <Outlet context={{ filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility, tagData } satisfies LayoutOutletContext} />
       </main>
     </div>
   );

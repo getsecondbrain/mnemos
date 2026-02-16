@@ -1,14 +1,17 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { listMemories, fetchVaultFile, getTimelineStats, deleteMemory, updateMemory } from "../services/api";
 import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
-import type { Memory } from "../types";
+import type { Memory, Tag } from "../types";
 import QuickCapture from "./QuickCapture";
 import MemoryCardMenu from "./MemoryCardMenu";
 import ConfirmModal from "./ConfirmModal";
 import OnThisDay from "./OnThisDay";
+import { isFilterEmpty, CONTENT_TYPES } from "./FilterPanel";
+import type { FilterState } from "./FilterPanel";
+import { useLayoutFilters } from "./Layout";
 
 function Thumbnail({ sourceId }: { sourceId: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -164,27 +167,121 @@ function formatDate(iso: string): string {
   }).format(new Date(utcIso));
 }
 
+function formatChipDate(isoDate: string): string {
+  const parts = isoDate.split("-");
+  const y = parts[0];
+  const m = parts[1];
+  const d = parts[2];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[parseInt(m ?? "1", 10) - 1]} ${parseInt(d ?? "1", 10)}, ${y}`;
+}
+
+function ActiveFilterChips({
+  filters,
+  tagData,
+  onRemoveContentType,
+  onRemoveDateRange,
+  onRemoveTag,
+  onResetVisibility,
+  onClearAll,
+  selectedYear,
+  onClearYear,
+}: {
+  filters: FilterState;
+  tagData: { tags: Tag[] };
+  onRemoveContentType: (ct: string) => void;
+  onRemoveDateRange: () => void;
+  onRemoveTag: (tagId: string) => void;
+  onResetVisibility: () => void;
+  onClearAll: () => void;
+  selectedYear: number | null;
+  onClearYear: () => void;
+}) {
+  // Build a lookup map for tag names
+  const tagNameMap = new Map(tagData.tags.map(t => [t.id, t.name]));
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-2">
+      <span className="text-xs text-gray-500">Filters:</span>
+
+      {/* Content type chips */}
+      {filters.contentTypes.map((ct) => {
+        const label = CONTENT_TYPES.find(c => c.value === ct)?.label ?? ct;
+        return (
+          <span key={`ct-${ct}`} className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
+            Content: {label}
+            <button onClick={() => onRemoveContentType(ct)} className="text-gray-500 hover:text-gray-200 ml-0.5" aria-label={`Remove ${label} filter`}>&times;</button>
+          </span>
+        );
+      })}
+
+      {/* Date range chip */}
+      {(filters.dateFrom || filters.dateTo) && (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
+          {selectedYear
+            ? `Year: ${selectedYear}`
+            : `Date: ${filters.dateFrom ? formatChipDate(filters.dateFrom) : "..."}\u2013${filters.dateTo ? formatChipDate(filters.dateTo) : "..."}`}
+          <button onClick={selectedYear ? onClearYear : onRemoveDateRange} className="text-gray-500 hover:text-gray-200 ml-0.5" aria-label="Remove date filter">&times;</button>
+        </span>
+      )}
+
+      {/* Tag chips */}
+      {filters.tagIds.map((tagId) => (
+        <span key={`tag-${tagId}`} className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
+          Tag: {tagNameMap.get(tagId) || tagId.slice(0, 8)}
+          <button onClick={() => onRemoveTag(tagId)} className="text-gray-500 hover:text-gray-200 ml-0.5" aria-label="Remove tag filter">&times;</button>
+        </span>
+      ))}
+
+      {/* Visibility chip (only when non-default) */}
+      {filters.visibility !== "public" && (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
+          Visibility: {filters.visibility}
+          <button onClick={onResetVisibility} className="text-gray-500 hover:text-gray-200 ml-0.5" aria-label="Reset visibility">&times;</button>
+        </span>
+      )}
+
+      {/* Clear all */}
+      <button onClick={onClearAll} className="text-xs text-gray-500 hover:text-gray-300 underline ml-1">
+        Clear all
+      </button>
+    </div>
+  );
+}
+
 export default function Timeline() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [showPrivate, setShowPrivate] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [searchParams, setSearchParams] = useSearchParams();
-  // Read tag filter from URL params
-  const selectedTagId = searchParams.get("tag") || null;
-  const selectedTagName = searchParams.get("tagName") || null;
+
+  // All filter state from Layout's single useFilterSearchParams (via outlet context)
+  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility, tagData } = useLayoutFilters();
+
+  // Derive selectedYear from date_from/date_to if they represent a full calendar year
+  const selectedYear = useMemo(() => {
+    if (!filters.dateFrom || !filters.dateTo) return null;
+    const fromMatch = filters.dateFrom.match(/^(\d{4})-01-01$/);
+    const toMatch = filters.dateTo.match(/^(\d{4})-12-31$/);
+    const fromYear = fromMatch?.[1];
+    const toYear = toMatch?.[1];
+    if (fromYear && toYear && fromYear === toYear) {
+      return parseInt(fromYear, 10);
+    }
+    return null;
+  }, [filters.dateFrom, filters.dateTo]);
 
   const refreshInFlightRef = useRef(false);
   const mountedRef = useRef(true);
   const loadInitialAbortRef = useRef<AbortController | null>(null);
   const loadInitialInFlightRef = useRef(false);
+  // Generation counter: incremented on every loadInitial call so loadMore can detect stale results
+  const filterGenerationRef = useRef(0);
   const { decrypt } = useEncryption();
 
   useEffect(() => {
@@ -227,10 +324,10 @@ export default function Timeline() {
   );
 
   const refreshStats = useCallback(() => {
-    return getTimelineStats({ visibility: showPrivate ? "all" : "public" }).then((stats) => {
+    return getTimelineStats({ visibility: filters.visibility }).then((stats) => {
       if (mountedRef.current) setTimelineStats(stats);
     }).catch(() => {});
-  }, [showPrivate]);
+  }, [filters.visibility]);
 
   useEffect(() => {
     refreshStats();
@@ -239,7 +336,7 @@ export default function Timeline() {
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedYear, selectedTagId, showPrivate]);
+  }, [filters.contentTypes.join(","), filters.dateFrom, filters.dateTo, filters.tagIds.join(","), filters.visibility]);
 
   async function loadInitial(options?: { background?: boolean }) {
     // Cancel any in-flight loadInitial request to prevent race conditions
@@ -249,6 +346,7 @@ export default function Timeline() {
     const abortController = new AbortController();
     loadInitialAbortRef.current = abortController;
     loadInitialInFlightRef.current = true;
+    filterGenerationRef.current += 1;
 
     const isBackground = options?.background ?? false;
     if (!isBackground) {
@@ -258,10 +356,12 @@ export default function Timeline() {
     try {
       const data = await listMemories({
         limit: PAGE_SIZE,
-        year: selectedYear ?? undefined,
-        tag_ids: selectedTagId ? [selectedTagId] : undefined,
+        content_type: filters.contentTypes.length > 0 ? filters.contentTypes.join(",") : undefined,
+        tag_ids: filters.tagIds.length > 0 ? filters.tagIds : undefined,
+        date_from: filters.dateFrom ?? undefined,
+        date_to: filters.dateTo ?? undefined,
         order_by: "captured_at",
-        visibility: showPrivate ? "all" : "public",
+        visibility: filters.visibility,
       });
       if (abortController.signal.aborted || !mountedRef.current) return;
       const decrypted = await decryptMemories(data);
@@ -324,24 +424,28 @@ export default function Timeline() {
   async function loadMore() {
     // Don't start loadMore if loadInitial is in-flight — results would be for a stale filter
     if (loadInitialInFlightRef.current) return;
+    // Capture generation so we can detect if filters changed during the fetch
+    const generation = filterGenerationRef.current;
     setLoadingMore(true);
     try {
       const data = await listMemories({
         skip: memories.length,
         limit: PAGE_SIZE,
-        year: selectedYear ?? undefined,
-        tag_ids: selectedTagId ? [selectedTagId] : undefined,
+        content_type: filters.contentTypes.length > 0 ? filters.contentTypes.join(",") : undefined,
+        tag_ids: filters.tagIds.length > 0 ? filters.tagIds : undefined,
+        date_from: filters.dateFrom ?? undefined,
+        date_to: filters.dateTo ?? undefined,
         order_by: "captured_at",
-        visibility: showPrivate ? "all" : "public",
+        visibility: filters.visibility,
       });
       // If filters changed while we were fetching, discard the stale results
-      if (loadInitialInFlightRef.current) return;
+      if (filterGenerationRef.current !== generation) return;
       const decrypted = await decryptMemories(data);
-      if (loadInitialInFlightRef.current) return;
+      if (filterGenerationRef.current !== generation) return;
       setMemories((prev) => [...prev, ...decrypted]);
       setHasMore(data.length >= PAGE_SIZE);
     } catch (err) {
-      if (loadInitialInFlightRef.current) return;
+      if (filterGenerationRef.current !== generation) return;
       setError(err instanceof Error ? err.message : "Failed to load more memories.");
     } finally {
       setLoadingMore(false);
@@ -372,9 +476,9 @@ export default function Timeline() {
     try {
       const updated = await updateMemory(memoryId, { visibility: newVisibility });
       setMemories((prev) => {
-        // If we're not showing private memories and the memory was just made private,
+        // If we're showing only public memories and the memory was just made private,
         // remove it from the displayed list instead of showing a stale entry
-        if (!showPrivate && updated.visibility === "private") {
+        if (filters.visibility === "public" && updated.visibility === "private") {
           return prev.filter((m) => m.id !== memoryId);
         }
         return prev.map((m) => (m.id === memoryId ? { ...m, visibility: updated.visibility } : m));
@@ -387,16 +491,12 @@ export default function Timeline() {
   }
 
   function handleSelectYear(year: number | null) {
-    setSelectedYear(year);
-  }
-
-  function handleClearTagFilter() {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete("tag");
-      next.delete("tagName");
-      return next;
-    });
+    if (year === null) {
+      // Clear date range (might have been set by a previous year click)
+      setFilters({ ...filters, dateFrom: null, dateTo: null });
+    } else {
+      setFilters({ ...filters, dateFrom: `${year}-01-01`, dateTo: `${year}-12-31` });
+    }
   }
 
   if (loading) {
@@ -440,7 +540,7 @@ export default function Timeline() {
     );
   }
 
-  if (memories.length === 0 && !selectedYear && !selectedTagId) {
+  if (memories.length === 0 && isFilterEmpty(filters)) {
     return (
       <div className="py-6">
         <OnThisDay onMemoryCreated={handleRefresh} />
@@ -481,31 +581,10 @@ export default function Timeline() {
             />
           </svg>
         </button>
-        <button
-          onClick={() => setShowPrivate((prev) => !prev)}
-          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
-            showPrivate
-              ? "bg-blue-600/20 text-blue-400 border border-blue-500/30"
-              : "text-gray-500 hover:text-gray-300"
-          }`}
-          title={showPrivate ? "Showing all memories" : "Show private memories"}
-        >
-          {showPrivate ? (
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-            </svg>
-          ) : (
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L6.59 6.59m7.532 7.532l3.29 3.29M3 3l18 18" />
-            </svg>
-          )}
-          {showPrivate ? "Showing all" : "Show private"}
-        </button>
       </div>
 
       {/* On This Day carousel — only when no filters active */}
-      {!selectedYear && !selectedTagId && (
+      {isFilterEmpty(filters) && (
         <OnThisDay onMemoryCreated={handleRefresh} />
       )}
 
@@ -518,25 +597,26 @@ export default function Timeline() {
         />
       )}
 
-      {selectedTagId && (
-        <div className="mb-4 flex items-center gap-2 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-300">
-          <span>
-            Filtered by tag: <span className="font-medium text-gray-100">{selectedTagName || "selected tag"}</span>
-          </span>
-          <button
-            onClick={handleClearTagFilter}
-            className="ml-auto text-xs text-gray-400 hover:text-gray-200 underline"
-          >
-            Clear
-          </button>
-        </div>
+      {/* Active filter chips */}
+      {!isFilterEmpty(filters) && (
+        <ActiveFilterChips
+          filters={filters}
+          tagData={tagData}
+          onRemoveContentType={removeContentType}
+          onRemoveDateRange={removeDateRange}
+          onRemoveTag={removeTagId}
+          onResetVisibility={resetVisibility}
+          onClearAll={clearAllFilters}
+          selectedYear={selectedYear}
+          onClearYear={() => setFilters({ ...filters, dateFrom: null, dateTo: null })}
+        />
       )}
 
       <QuickCapture onMemoryCreated={handleRefresh} />
 
       {memories.length === 0 ? (
         <p className="text-gray-500 text-center py-8">
-          No memories{selectedYear ? ` from ${selectedYear}` : ""}{selectedTagId ? ` tagged "${selectedTagName || "selected tag"}"` : ""}.
+          No memories match the current filters.
         </p>
       ) : (
         <div className="space-y-4">
@@ -594,23 +674,18 @@ export default function Timeline() {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              setSearchParams((prev) => {
-                                const next = new URLSearchParams(prev);
-                                next.set("tag", tag.tag_id);
-                                next.set("tagName", tag.tag_name);
-                                return next;
-                              });
+                              // Add tag to filter if not already present
+                              if (!filters.tagIds.includes(tag.tag_id)) {
+                                setFilters({ ...filters, tagIds: [...filters.tagIds, tag.tag_id] });
+                              }
                             }}
                             onKeyDown={(e) => {
                               if (e.key === "Enter" || e.key === " ") {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                setSearchParams((prev) => {
-                                  const next = new URLSearchParams(prev);
-                                  next.set("tag", tag.tag_id);
-                                  next.set("tagName", tag.tag_name);
-                                  return next;
-                                });
+                                if (!filters.tagIds.includes(tag.tag_id)) {
+                                  setFilters({ ...filters, tagIds: [...filters.tagIds, tag.tag_id] });
+                                }
                               }
                             }}
                             className="px-1.5 py-0.5 rounded text-[10px] font-medium text-white truncate max-w-[100px] cursor-pointer hover:opacity-80 transition-opacity"

@@ -1,71 +1,103 @@
-# Audit Report — P9.2
+# Audit Report — P9.3
 
 ```json
 {
-  "high": [],
-  "medium": [
+  "high": [
     {
       "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 350,
-      "issue": "Mobile slide-up sheet does not lock body scroll. When the modal overlay is open (fixed inset-0 z-50), the page behind the backdrop remains scrollable on touch devices. Users can accidentally scroll the timeline while interacting with the filter sheet. Should add document.body.style.overflow = 'hidden' on open and restore on close (via useEffect cleanup).",
+      "line": 185,
+      "issue": "CONTENT_TYPES array lists 'file' and 'url' but the backend ingestion service never produces these content_type values. Backend uses 'document', 'webpage', 'video', and 'email' which are all missing from the filter. Users selecting 'File' or 'URL' will always get zero results; users cannot filter by 'document' or 'webpage' which are real content types in the database. The array should be: text, photo, document, voice, video, url/webpage, email — matching backend's _categorize_mime() output.",
       "category": "logic"
     },
     {
       "file": "frontend/src/components/Layout.tsx",
-      "line": 19,
-      "issue": "Filter state is initialized with the EMPTY_FILTERS constant reference: useState<FilterState>(EMPTY_FILTERS). While no current code mutates arrays in-place, the contentTypes[] and tagIds[] arrays inside EMPTY_FILTERS are shared mutable references. The freshEmptyFilters() utility exists in FilterPanel.tsx specifically to avoid this, but Layout doesn't use it. Should use freshEmptyFilters() or an inline literal as the initial state to be defensive.",
+      "line": 104,
+      "issue": "The mobile FilterPanel is rendered outside the sidebar nav, meaning it appears on ALL routes (Capture, Search, Chat, Graph, Settings, etc.), not just Timeline. Changing a filter on the /chat page modifies URL search params that have no effect on Chat but will confuse the user and pollute the URL. The FilterPanel should only render when on a route that consumes filters (e.g., /timeline), or the mobile trigger should be conditionally shown.",
+      "category": "logic"
+    }
+  ],
+  "medium": [
+    {
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 34,
+      "issue": "useFilterSearchParams() is called unconditionally in Layout, which calls useSearchParams() on every route. This means every navigation to any page reads/writes URL search params intended only for Timeline filtering. Filter params will persist in the URL when navigating away from /timeline (e.g., /settings?content_type=photo), creating a confusing UX. The hook should either be scoped to Timeline's route, or the Outlet context approach should clear stale params on route change.",
+      "category": "logic"
+    },
+    {
+      "file": "frontend/src/components/Timeline.tsx",
+      "line": 339,
+      "issue": "useEffect dependency array uses filters.contentTypes.join(',') and filters.tagIds.join(',') which are computed inline. While this avoids reference-equality issues, React's exhaustive-deps lint rule is suppressed. If tagIds contains values with commas (unlikely for UUIDs but possible for malformed input), the join would produce ambiguous results (e.g., ['a,b','c'] and ['a','b,c'] both join to 'a,b,c'), causing the effect to not re-fire when it should.",
       "category": "logic"
     },
     {
       "file": "frontend/src/components/Layout.tsx",
-      "line": 19,
-      "issue": "Filter state (filters/setFilters) is held in Layout but never passed to child routes via Outlet context or any other mechanism. The FilterPanel UI works (sections toggle, state updates), but no page component (Timeline, Search, etc.) can read the current filter values. Until P9.3 wires this up, the filters are cosmetic only. This is expected per the plan but worth noting — the filters are fully disconnected from data loading.",
-      "category": "api-contract"
+      "line": 90,
+      "issue": "The desktop sidebar FilterPanel is always visible but only meaningful on the Timeline page. On other pages (/chat, /graph, /settings), users see filter controls that do nothing, which is misleading. Consider hiding the filter panel or showing a message when not on a filterable route.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "frontend/src/components/Timeline.tsx",
+      "line": 264,
+      "issue": "useLayoutFilters() calls useOutletContext() which will throw or return undefined if Timeline is ever rendered outside Layout's Outlet (e.g., in tests or a different route configuration). There is no null check or fallback. This is fragile — a missing context will crash the component.",
+      "category": "crash"
+    },
+    {
+      "file": "frontend/src/components/Timeline.tsx",
+      "line": 170,
+      "issue": "formatChipDate splits on '-' and accesses parts[1] and parts[2] but doesn't validate the input format. If dateFrom/dateTo is an invalid or partial string (e.g., '2024' or '2024-01'), parseInt of undefined will produce NaN, and the months array lookup will return undefined, displaying 'undefined NaN, 2024' in the chip.",
+      "category": "error-handling"
+    },
+    {
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 91,
+      "issue": "Legacy ?tag= param is read and merged into tagIds during URL parsing, but setFilters only clears legacy params when explicitly called. If the user just navigates to /timeline?tag=X and never interacts with filters, the legacy params persist in the URL indefinitely. They'll only be cleaned up on the next filter interaction, not on initial load.",
+      "category": "inconsistency"
     }
   ],
   "low": [
     {
-      "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 45,
-      "issue": "useFilterTags() fetches tags on mount in Layout (which renders on every route). If the user navigates to a page that doesn't use filters (e.g., /chat, /settings), the tag fetch still fires. This is wasted work but minimal — a single small API call. Could be optimized with lazy loading in the future.",
+      "file": "frontend/src/components/Timeline.tsx",
+      "line": 611,
+      "issue": "onClearYear callback creates a new inline closure on every render: () => setFilters({ ...filters, dateFrom: null, dateTo: null }). This is functionally identical to removeDateRange but bypasses the useCallback optimization. Should just use removeDateRange for consistency and to avoid unnecessary re-renders of ActiveFilterChips.",
       "category": "inconsistency"
     },
     {
-      "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 113,
-      "issue": "tagSearch state in FilterSections is local to each variant's FilterSections instance. If the user types a tag search in the mobile sheet, closes it, then reopens, the search is reset. This is acceptable UX but worth noting — the search filter does not persist across open/close cycles of the mobile sheet.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 199,
-      "issue": "Date range validation warning ('From is after To') is shown inline but the invalid date range is still sent to onFilterChange. The component does not prevent or correct the invalid state — the parent receives a logically impossible filter (dateFrom > dateTo) that will return zero results. Consider preventing dateTo < dateFrom via the min/max HTML attributes (which are set at lines 178 and 191) — but these only affect the date picker UI, not programmatic state.",
-      "category": "logic"
-    },
-    {
-      "file": "frontend/src/components/FilterPanel.tsx",
-      "line": 349,
-      "issue": "Mobile sheet has no entry/exit animation — it appears and disappears instantly. The plan explicitly says 'For P9.2, skip the animation — instant show/hide is acceptable' so this is by design, but users may perceive it as janky on mobile.",
+      "file": "frontend/src/components/Layout.tsx",
+      "line": 5,
+      "issue": "FilterState and TagData types are imported but FilterState is only used in the LayoutOutletContext interface (re-exported from FilterPanel). TagData is used for the same purpose. These could be removed from the import and instead just referenced from FilterPanel's export in the interface definition, but this is minor.",
       "category": "style"
+    },
+    {
+      "file": "frontend/src/components/FilterPanel.tsx",
+      "line": 14,
+      "issue": "EMPTY_FILTERS is still exported but no longer used outside of FilterPanel.tsx (the plan says to keep it as the 'cleared' state, but freshEmptyFilters() is used internally instead). This is dead code that may confuse future developers.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "frontend/src/components/Timeline.tsx",
+      "line": 357,
+      "issue": "The loadInitial function still doesn't pass the AbortController signal to the fetch call (listMemories doesn't accept AbortSignal). While the component checks abortController.signal.aborted after await, the actual HTTP request is not cancelled — it completes in the background, wasting bandwidth. This is a pre-existing issue, not introduced by P9.3.",
+      "category": "inconsistency"
     }
   ],
   "validated": [
-    "FilterPanel is a controlled component — receives filters as props and calls onFilterChange with updated values. Does not maintain its own copy of filter state. Correct per plan.",
-    "FilterState interface matches the plan: contentTypes[], dateFrom, dateTo, tagIds[], visibility with correct types and EMPTY_FILTERS defaults.",
-    "Tag data is shared between sidebar and mobile variants via useFilterTags() hook called once in Layout and passed as tagData prop, avoiding duplicate fetches.",
-    "Radio button groups use different name props for sidebar vs mobile variants ('sidebar-visibility' vs 'mobile-visibility'), preventing cross-interference between the two rendered instances.",
-    "CollapsibleSection correctly defaults to closed (defaultOpen ?? false), with Content Type set to defaultOpen per plan.",
-    "Active filter count logic correctly increments for each active filter category (contentTypes.length > 0, dateFrom || dateTo, tagIds.length > 0, visibility !== 'public').",
-    "Clear all button uses freshEmptyFilters() to create a new object, avoiding shared mutable reference issues.",
-    "Tag search filter (shown when > 10 tags) correctly filters by case-insensitive name substring.",
-    "Tags section handles loading, error, and empty states correctly with retry button.",
-    "Mobile sheet closes on Escape key, backdrop click, Done button, and route change — all four expected close mechanisms are implemented.",
-    "Layout correctly renders FilterPanel with variant='sidebar' inside hidden md:block wrapper for desktop, and variant='mobile' outside the nav for mobile.",
-    "The variant prop pattern avoids rendering the FilterPanel twice with duplicate state — both instances share the same filters/setFilters from Layout.",
-    "Date inputs use colorScheme: 'dark' inline style and appropriate Tailwind dark theme classes.",
-    "Content type values (text, photo, file, voice, url) match the backend's expected content_type categories.",
-    "API contract for listTags() is correct — called with no args, returns Tag[] with id, name, color fields all used by the component.",
-    "The listMemories API already accepts content_type (comma-separated), date_from, date_to, tag_ids, and visibility params from P9.1, ready for P9.3 integration."
+    "FilterState type definition matches between FilterPanel, Layout outlet context, and Timeline consumer — no type mismatches",
+    "useFilterSearchParams correctly derives filter state from URL params via useMemo with searchParams dependency",
+    "setFilters correctly serializes all filter fields to URL params and cleans up legacy tag/tagName params",
+    "Granular removers (removeContentType, removeTagId, removeDateRange, resetVisibility) use setSearchParams functional updater to avoid stale closure races — properly implemented",
+    "selectedYear derivation via useMemo correctly identifies full calendar year ranges (YYYY-01-01 to YYYY-12-31) and returns null for partial ranges",
+    "handleSelectYear correctly sets date_from/date_to params for year selection and clears both on deselect",
+    "API contract between frontend listMemories() and backend list_memories() is correct — content_type (comma-separated), tag_ids (appended individually), date_from, date_to, visibility all match",
+    "Backend properly handles date_from as >= and date_to with inclusive-day heuristic (date-only strings get +1 day with < comparison), matching frontend's YYYY-MM-DD format",
+    "ActiveFilterChips correctly builds tag name lookup map from tagData and falls back to truncated ID for unknown tags",
+    "Tag chip click handler on memory cards correctly checks for duplicate tag IDs before adding to filter",
+    "loadMore correctly uses filterGenerationRef to discard stale results when filters change during fetch",
+    "OnThisDay carousel correctly hidden when any filter is active via isFilterEmpty check",
+    "Empty state correctly shows 'No memories match the current filters' when filters are active and results are empty, vs the onboarding message when no filters are active",
+    "Visibility filter correctly omits 'public' from URL (default value) to keep URLs clean",
+    "refreshStats correctly depends on filters.visibility to refetch stats when visibility changes",
+    "Layout passes filter state through Outlet context, and Timeline consumes it via useLayoutFilters() — single source of truth pattern is correct",
+    "parseVisibility helper validates against a Set of known values and falls back to 'public' — prevents invalid URL param injection"
   ]
 }
 ```

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { useLocation } from "react-router-dom";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { listTags } from "../services/api";
 import type { Tag } from "../types";
 
@@ -58,7 +58,131 @@ export function useFilterTags(): TagData {
   return { tags, tagsLoading, tagsError, retryLoadTags: loadTags };
 }
 
-const CONTENT_TYPES = [
+export function isFilterEmpty(filters: FilterState): boolean {
+  return filters.contentTypes.length === 0 &&
+    !filters.dateFrom && !filters.dateTo &&
+    filters.tagIds.length === 0 &&
+    filters.visibility === "public";
+}
+
+const VALID_VISIBILITIES: ReadonlySet<string> = new Set(["all", "public", "private"]);
+function parseVisibility(raw: string | null): FilterState["visibility"] {
+  if (raw && VALID_VISIBILITIES.has(raw)) return raw as FilterState["visibility"];
+  return "public";
+}
+
+export function useFilterSearchParams(): {
+  filters: FilterState;
+  setFilters: (fs: FilterState) => void;
+  clearAllFilters: () => void;
+  removeContentType: (ct: string) => void;
+  removeDateRange: () => void;
+  removeTagId: (tagId: string) => void;
+  resetVisibility: () => void;
+} {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const filters: FilterState = useMemo(() => {
+    const contentTypeRaw = searchParams.get("content_type") || "";
+    const contentTypes = contentTypeRaw ? contentTypeRaw.split(",").filter(Boolean) : [];
+
+    const tagIdsRaw = searchParams.get("tag_ids") || "";
+    // Also support legacy ?tag=X param from D8.1
+    const legacyTag = searchParams.get("tag") || "";
+    let tagIds = tagIdsRaw ? tagIdsRaw.split(",").filter(Boolean) : [];
+    if (legacyTag && !tagIds.includes(legacyTag)) {
+      tagIds = [...tagIds, legacyTag];
+    }
+
+    return {
+      contentTypes,
+      dateFrom: searchParams.get("date_from") || null,
+      dateTo: searchParams.get("date_to") || null,
+      tagIds,
+      visibility: parseVisibility(searchParams.get("visibility")),
+    };
+  }, [searchParams]);
+
+  const setFilters = useCallback((fs: FilterState) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      // Clear legacy params
+      next.delete("tag");
+      next.delete("tagName");
+
+      // Content types
+      if (fs.contentTypes.length > 0) {
+        next.set("content_type", fs.contentTypes.join(","));
+      } else {
+        next.delete("content_type");
+      }
+      // Date range
+      if (fs.dateFrom) next.set("date_from", fs.dateFrom);
+      else next.delete("date_from");
+      if (fs.dateTo) next.set("date_to", fs.dateTo);
+      else next.delete("date_to");
+      // Tags
+      if (fs.tagIds.length > 0) {
+        next.set("tag_ids", fs.tagIds.join(","));
+      } else {
+        next.delete("tag_ids");
+      }
+      // Visibility
+      if (fs.visibility !== "public") next.set("visibility", fs.visibility);
+      else next.delete("visibility");
+
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  // Granular removers for chip X buttons — use setSearchParams functional updater
+  // to read the latest URL state and avoid stale closure races.
+  const clearAllFilters = useCallback(() => { setFilters(freshEmptyFilters()); }, [setFilters]);
+  const removeContentType = useCallback((ct: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = (next.get("content_type") || "").split(",").filter(Boolean);
+      const updated = current.filter(c => c !== ct);
+      if (updated.length > 0) next.set("content_type", updated.join(","));
+      else next.delete("content_type");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const removeDateRange = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("date_from");
+      next.delete("date_to");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const removeTagId = useCallback((tagId: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = (next.get("tag_ids") || "").split(",").filter(Boolean);
+      const updated = current.filter(id => id !== tagId);
+      if (updated.length > 0) next.set("tag_ids", updated.join(","));
+      else next.delete("tag_ids");
+      // Also clean up legacy tag param if it matches
+      if (next.get("tag") === tagId) {
+        next.delete("tag");
+        next.delete("tagName");
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const resetVisibility = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("visibility");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  return { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, resetVisibility };
+}
+
+export const CONTENT_TYPES = [
   { value: "text", label: "Text" },
   { value: "photo", label: "Photo" },
   { value: "file", label: "File" },
