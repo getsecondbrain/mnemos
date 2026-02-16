@@ -10,11 +10,11 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlmodel import Session
 
 from app import auth_state
-from app.db import engine
+from app.db import get_session
 from app.routers.auth import _decode_token
 from app.services.embedding import EmbeddingError, EmbeddingService
 from app.services.encryption import EncryptionService
@@ -86,7 +86,10 @@ async def _handle_question(
 
 
 @router.websocket("/ws/chat")
-async def chat_websocket(websocket: WebSocket) -> None:
+async def chat_websocket(
+    websocket: WebSocket,
+    db_session: Session = Depends(get_session),
+) -> None:
     """WebSocket endpoint for streaming RAG chat.
 
     Protocol:
@@ -131,7 +134,6 @@ async def chat_websocket(websocket: WebSocket) -> None:
         await websocket.close(code=4003)
         return
 
-    db_session = Session(engine)
     rag_service = RAGService(
         embedding_service=embedding_service,
         llm_service=llm_service,
@@ -176,5 +178,3 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 )
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected (session=%s)", session_id)
-    finally:
-        db_session.close()
