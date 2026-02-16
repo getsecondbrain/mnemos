@@ -32,10 +32,13 @@ _PRESERVATION_FORMAT_TO_MIME: dict[str, str] = {
     "png": "image/png",
     "tiff": "image/tiff",
     "flac": "audio/flac",
+    "wav": "audio/wav",
     "ffv1-mkv": "video/x-matroska",
     "pdf+text": "application/pdf",
     "pdf-a+md": "application/pdf",
     "markdown": "text/markdown",
+    "csv": "text/csv",
+    "json": "application/json",
 }
 
 

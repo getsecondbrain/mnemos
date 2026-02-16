@@ -29,23 +29,23 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 PRESERVATION_MAP: dict[str, str] = {
-    # Images — keep as-is (JPEG is universally decodable, no need to bloat with PNG)
-    "image/jpeg": "jpeg",
+    # Images → PNG (lossless)
+    "image/jpeg": "png",
     "image/heic": "png",
     "image/webp": "png",
     # Images already archival
     "image/png": "png",
     "image/tiff": "tiff",
-    # Audio — keep originals as-is
-    "audio/mpeg": "mp3",
-    "audio/aac": "aac",
-    "audio/ogg": "ogg",
+    # Audio → FLAC (lossless)
+    "audio/mpeg": "flac",
+    "audio/aac": "flac",
+    "audio/ogg": "flac",
     "audio/flac": "flac",
     "audio/wav": "wav",
-    # Video — keep originals as-is
-    "video/mp4": "mp4",
-    "video/quicktime": "mov",
-    "video/webm": "webm",
+    # Video → FFV1 in MKV (lossless)
+    "video/mp4": "ffv1-mkv",
+    "video/quicktime": "ffv1-mkv",
+    "video/webm": "ffv1-mkv",
     # Documents → PDF/A + Markdown
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "pdf-a+md",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "pdf-a+md",
@@ -65,17 +65,10 @@ PRESERVATION_MAP: dict[str, str] = {
 
 _ARCHIVAL_MIMES: frozenset[str] = frozenset(
     {
-        "image/jpeg",
         "image/png",
         "image/tiff",
-        "audio/mpeg",
-        "audio/aac",
-        "audio/ogg",
         "audio/flac",
         "audio/wav",
-        "video/mp4",
-        "video/quicktime",
-        "video/webm",
         "text/markdown",
         "text/csv",
         "application/json",
@@ -178,7 +171,7 @@ class PreservationService:
         if self._is_already_archival(mime_type):
             text_extract: str | None = None
             # For text types, provide text extract
-            if mime_type in ("text/plain", "text/markdown"):
+            if mime_type == "text/markdown":
                 text_extract = self._decode_text(file_data)
             # For archival image types (PNG, TIFF), run OCR if enabled
             elif ocr_enabled and mime_type.startswith("image/"):
@@ -207,7 +200,7 @@ class PreservationService:
 
         # Dispatch based on MIME type category
         if mime_type.startswith("image/"):
-            data, mime = self._convert_image(file_data, mime_type)
+            data, mime = await asyncio.to_thread(self._convert_image, file_data, mime_type)
             # Run OCR on photos if enabled — makes document photos, receipts, etc. searchable
             text_extract: str | None = None
             if ocr_enabled:
@@ -232,7 +225,7 @@ class PreservationService:
             )
 
         if mime_type.startswith("audio/"):
-            data, mime = self._convert_audio(file_data, mime_type)
+            data, mime = await asyncio.to_thread(self._convert_audio, file_data, mime_type)
             return PreservationResult(
                 preserved_data=data,
                 preserved_mime=mime,
@@ -243,7 +236,7 @@ class PreservationService:
             )
 
         if mime_type.startswith("video/"):
-            data, mime = self._convert_video(file_data, mime_type)
+            data, mime = await asyncio.to_thread(self._convert_video, file_data, mime_type)
             return PreservationResult(
                 preserved_data=data,
                 preserved_mime=mime,
@@ -258,8 +251,9 @@ class PreservationService:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         ):
-            pdf_data, pdf_mime, md_bytes = self._convert_document(
-                file_data, mime_type, original_filename
+            pdf_data, pdf_mime, md_bytes = await asyncio.to_thread(
+                self._convert_document,
+                file_data, mime_type, original_filename,
             )
             text_extract = md_bytes.decode("utf-8") if md_bytes else None
             return PreservationResult(
