@@ -111,8 +111,15 @@ class LLMService:
         prompt: str,
         system: str | None = None,
         temperature: float = 0.7,
+        local_only: bool = False,
     ) -> LLMResponse:
-        """Generate a complete response, with automatic fallback."""
+        """Generate a complete response, with automatic fallback.
+
+        Args:
+            local_only: If True, never fall back to cloud LLM. Use this when
+                the prompt contains decrypted user content that must not leave
+                the local machine.
+        """
         # Try Ollama first (if healthy or cooldown expired)
         if self._should_try_ollama():
             try:
@@ -121,8 +128,12 @@ class LLMService:
                 return result
             except LLMError:
                 self._mark_ollama_down()
-                if not self.has_fallback:
+                if local_only or not self.has_fallback:
                     raise
+
+        # local_only callers must not use cloud fallback
+        if local_only:
+            raise LLMError("Ollama is unavailable and local_only=True prevents cloud fallback")
 
         # Fallback to OpenAI-compatible endpoint
         if self.has_fallback:

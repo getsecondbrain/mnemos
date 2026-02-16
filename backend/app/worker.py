@@ -1173,7 +1173,7 @@ class BackgroundWorker:
         )
 
     def _process_enrich_prompt_loop(self, payload: dict) -> None:
-        """Handle ENRICH_PROMPT loop job. (Logic added in P10.2)"""
+        """Handle ENRICH_PROMPT loop job: generate enrichment questions for brief/isolated memories."""
         job_id = payload.pop("_job_id", None)
         attempt = payload.pop("_attempt", 1)
         max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
@@ -1185,15 +1185,272 @@ class BackgroundWorker:
             attempt=attempt, max_attempts=max_attempts, job_id=job_id,
         )
 
-        logger.info("ENRICH_PROMPT loop job processed (no-op, logic in P10.2)")
+        master_key = auth_state.get_any_active_key()
+        if master_key is None:
+            logger.warning("No active session for ENRICH_PROMPT — skipping this cycle")
+            self._persist_job(
+                job_type=JobType.ENRICH_PROMPT.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+            return
 
-        self._persist_job(
-            job_type=JobType.ENRICH_PROMPT.value,
-            payload=payload,
-            status=JobStatus.SUCCEEDED.value,
-            attempt=attempt, max_attempts=max_attempts,
-            completed_at=datetime.now(timezone.utc), job_id=job_id,
+        encryption_service = EncryptionService(master_key)
+        loop = asyncio.new_event_loop()
+
+        try:
+            engine = self._get_engine()
+            candidates = self._find_enrichable_memory_ids(engine, limit=5)
+
+            if not candidates:
+                logger.info("ENRICH_PROMPT: no candidate memories found")
+                self._persist_job(
+                    job_type=JobType.ENRICH_PROMPT.value,
+                    payload=payload,
+                    status=JobStatus.SUCCEEDED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+                return
+
+            suggestions_created = 0
+            llm_failures = 0
+            candidates_processed = 0
+            for mem_id in candidates:
+                if suggestions_created >= 5:
+                    break
+                candidates_processed += 1
+                try:
+                    created = self._generate_enrich_prompt_for_memory(
+                        loop, mem_id, encryption_service, engine
+                    )
+                    if created:
+                        suggestions_created += 1
+                except Exception:
+                    llm_failures += 1
+                    logger.warning(
+                        "ENRICH_PROMPT failed for memory %s", mem_id, exc_info=True
+                    )
+
+            if llm_failures > 0 and llm_failures == candidates_processed:
+                logger.error(
+                    "ENRICH_PROMPT: all %d candidates failed — possible LLM outage",
+                    llm_failures,
+                )
+
+            logger.info("ENRICH_PROMPT: created %d suggestions this cycle", suggestions_created)
+
+            self._persist_job(
+                job_type=JobType.ENRICH_PROMPT.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()
+            err_msg = str(exc)
+            logger.exception("Failed to process ENRICH_PROMPT job")
+
+            if attempt >= max_attempts:
+                self._persist_job(
+                    job_type=JobType.ENRICH_PROMPT.value,
+                    payload=payload,
+                    status=JobStatus.FAILED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+            else:
+                next_attempt = attempt + 1
+                delay = self._calculate_retry_delay(attempt)
+                retry_at = datetime.now(timezone.utc) + delay
+                self._persist_job(
+                    job_type=JobType.ENRICH_PROMPT.value,
+                    payload=payload,
+                    status=JobStatus.PENDING.value,
+                    attempt=next_attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    next_retry_at=retry_at, job_id=job_id,
+                )
+                logger.info(
+                    "Scheduled ENRICH_PROMPT retry %d/%d at %s",
+                    next_attempt, max_attempts, retry_at.isoformat(),
+                )
+        finally:
+            loop.close()
+
+    def _find_enrichable_memory_ids(self, engine, limit: int = 5) -> list[str]:
+        """Find candidate memory IDs for enrichment prompts.
+
+        Returns up to limit*4 candidates. The caller will filter after
+        decryption (content < 100 chars or no connections) and stop at limit.
+        """
+        from app.models.memory import Memory
+        from app.models.suggestion import Suggestion, SuggestionStatus, SuggestionType
+
+        with Session(engine) as session:
+            already_suggested = (
+                select(Suggestion.memory_id)
+                .where(Suggestion.suggestion_type == SuggestionType.ENRICH_PROMPT.value)
+                .where(
+                    Suggestion.status.in_([  # type: ignore[union-attr]
+                        SuggestionStatus.PENDING.value,
+                        SuggestionStatus.DISMISSED.value,
+                    ])
+                )
+                .distinct()
+                .subquery()
+            )
+            stmt = (
+                select(Memory.id)
+                .where(Memory.id.notin_(select(already_suggested.c.memory_id)))
+                .order_by(Memory.created_at.desc())
+                .limit(limit * 4)
+            )
+            results = session.exec(stmt).all()
+            return list(results)
+
+    def _generate_enrich_prompt_for_memory(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        memory_id: str,
+        encryption_service: EncryptionService,
+        engine,
+    ) -> bool:
+        """Generate an enrichment question for a single memory.
+
+        Returns True if a suggestion was created, False if memory was skipped.
+        """
+        from sqlmodel import func
+
+        from app.models.connection import Connection
+        from app.models.memory import Memory
+        from app.models.suggestion import Suggestion, SuggestionStatus, SuggestionType
+        from app.services.encryption import EncryptedEnvelope
+
+        # 1. Snapshot ORM attributes
+        with Session(engine) as session:
+            memory = session.get(Memory, memory_id)
+            if memory is None:
+                return False
+            mem_title = memory.title
+            mem_content = memory.content
+            mem_title_dek = memory.title_dek
+            mem_content_dek = memory.content_dek
+
+        # 2. Decrypt title and content
+        try:
+            if mem_title_dek:
+                title_plain = encryption_service.decrypt(
+                    EncryptedEnvelope(
+                        ciphertext=bytes.fromhex(mem_title),
+                        encrypted_dek=bytes.fromhex(mem_title_dek),
+                        algo="aes-256-gcm", version=1,
+                    )
+                ).decode("utf-8")
+            else:
+                title_plain = mem_title or ""
+
+            if mem_content_dek:
+                content_plain = encryption_service.decrypt(
+                    EncryptedEnvelope(
+                        ciphertext=bytes.fromhex(mem_content),
+                        encrypted_dek=bytes.fromhex(mem_content_dek),
+                        algo="aes-256-gcm", version=1,
+                    )
+                ).decode("utf-8")
+            else:
+                content_plain = mem_content or ""
+        except Exception:
+            logger.warning("ENRICH_PROMPT: decryption failed for memory %s", memory_id, exc_info=True)
+            return False
+
+        # 3. Check qualification — content length < 100 chars OR no connections
+        # Skip memories with no meaningful content (empty title + empty content)
+        if not title_plain.strip() and not content_plain.strip():
+            logger.debug("ENRICH_PROMPT: skipping memory %s — empty title and content", memory_id)
+            return False
+
+        qualifies = False
+        qualification_reason = ""
+
+        if len(content_plain.strip()) < 100:
+            qualifies = True
+            qualification_reason = "brief"
+
+        if not qualifies:
+            with Session(engine) as session:
+                conn_count = session.exec(
+                    select(func.count())
+                    .select_from(Connection)
+                    .where(
+                        (Connection.source_memory_id == memory_id)
+                        | (Connection.target_memory_id == memory_id)
+                    )
+                ).one()
+                if conn_count == 0:
+                    qualifies = True
+                    qualification_reason = "no_connections"
+
+        if not qualifies:
+            return False
+
+        # 4. Call LLM to generate enrichment question
+        content_preview = content_plain[:300] if len(content_plain) > 300 else content_plain
+        if qualification_reason == "no_connections":
+            enrichment_instruction = (
+                "This memory has no connections to other memories. Generate a single "
+                "thoughtful question (under 20 words) that would help the owner add "
+                "context or relate it to other experiences."
+            )
+        else:
+            enrichment_instruction = (
+                "This memory seems brief. Generate a single thoughtful question "
+                "(under 20 words) that would help the owner add more detail."
+            )
+        prompt = (
+            f"Title: {title_plain}\n"
+            f"Content: {content_preview}\n\n"
+            f"{enrichment_instruction}"
         )
+
+        response = loop.run_until_complete(
+            self._llm_service.generate(
+                prompt=prompt,
+                system="You are a thoughtful memory assistant. Output only a single question, "
+                       "under 20 words. No preamble, no quotes.",
+                temperature=0.7,
+                local_only=True,
+            )
+        )
+
+        question = response.text.strip().strip('"').strip("'")
+
+        # 5. Validate the question
+        if not question or len(question) < 5 or len(question) > 200:
+            logger.debug("ENRICH_PROMPT: LLM returned invalid question for memory %s: %r", memory_id, question)
+            return False
+
+        # 6. Encrypt and store the Suggestion
+        envelope = encryption_service.encrypt(question.encode("utf-8"))
+        with Session(engine) as session:
+            suggestion = Suggestion(
+                memory_id=memory_id,
+                suggestion_type=SuggestionType.ENRICH_PROMPT.value,
+                content_encrypted=envelope.ciphertext.hex(),
+                content_dek=envelope.encrypted_dek.hex(),
+                encryption_algo=envelope.algo,
+                encryption_version=envelope.version,
+                status=SuggestionStatus.PENDING.value,
+            )
+            session.add(suggestion)
+            session.commit()
+
+        logger.info("ENRICH_PROMPT: created suggestion for memory %s", memory_id)
+        return True
 
     def _process_connection_rescan(self, payload: dict) -> None:
         """Handle CONNECTION_RESCAN loop job. (Logic added in P10.3)"""
