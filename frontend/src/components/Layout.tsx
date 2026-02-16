@@ -13,6 +13,7 @@ export interface LayoutOutletContext {
   removeTagId: (tagId: string) => void;
   removePersonId: (personId: string) => void;
   resetVisibility: () => void;
+  removeLocation: () => void;
   tagData: TagData;
   personData: PersonData;
 }
@@ -35,7 +36,7 @@ const navItems = [
 
 export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility } = useFilterSearchParams();
+  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation } = useFilterSearchParams();
   const tagData = useFilterTags();
   const personData = useFilterPersons();
   const location = useLocation();
@@ -109,7 +110,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
       <FilterPanel filters={filters} onFilterChange={setFilters} variant="mobile" tagData={tagData} personData={personData} />
 
       <main className="flex-1 overflow-y-auto p-4 md:p-6">
-        <Outlet context={{ filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, tagData, personData } satisfies LayoutOutletContext} />
+        <Outlet context={{ filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation, tagData, personData } satisfies LayoutOutletContext} />
       </main>
     </div>
   );

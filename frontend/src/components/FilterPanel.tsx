@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import { listTags, listPersons, fetchPersonThumbnail } from "../services/api";
+import { listTags, listPersons, fetchPersonThumbnail, geocodingSearch } from "../services/api";
 import type { Tag, Person } from "../types";
 
 export interface FilterState {
@@ -10,6 +10,8 @@ export interface FilterState {
   tagIds: string[];
   personIds: string[];
   visibility: "all" | "public" | "private";
+  near: string | null;
+  locationQuery: string | null;
 }
 
 export const EMPTY_FILTERS: FilterState = {
@@ -19,11 +21,13 @@ export const EMPTY_FILTERS: FilterState = {
   tagIds: [],
   personIds: [],
   visibility: "public",
+  near: null,
+  locationQuery: null,
 };
 
 /** Returns a fresh copy of EMPTY_FILTERS to avoid shared-mutable-reference bugs */
 function freshEmptyFilters(): FilterState {
-  return { contentTypes: [], dateFrom: null, dateTo: null, tagIds: [], personIds: [], visibility: "public" };
+  return { contentTypes: [], dateFrom: null, dateTo: null, tagIds: [], personIds: [], visibility: "public", near: null, locationQuery: null };
 }
 
 /** Shared tag data to avoid duplicate fetches across sidebar/mobile variants */
@@ -99,7 +103,8 @@ export function isFilterEmpty(filters: FilterState): boolean {
     !filters.dateFrom && !filters.dateTo &&
     filters.tagIds.length === 0 &&
     filters.personIds.length === 0 &&
-    filters.visibility === "public";
+    filters.visibility === "public" &&
+    !filters.near;
 }
 
 const VALID_VISIBILITIES: ReadonlySet<string> = new Set(["all", "public", "private"]);
@@ -117,6 +122,7 @@ export function useFilterSearchParams(): {
   removeTagId: (tagId: string) => void;
   removePersonId: (personId: string) => void;
   resetVisibility: () => void;
+  removeLocation: () => void;
 } {
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -142,6 +148,8 @@ export function useFilterSearchParams(): {
       tagIds,
       personIds,
       visibility: parseVisibility(searchParams.get("visibility")),
+      near: searchParams.get("near") || null,
+      locationQuery: searchParams.get("locationQuery") || null,
     };
   }, [searchParams]);
 
@@ -178,6 +186,12 @@ export function useFilterSearchParams(): {
       // Visibility
       if (fs.visibility !== "public") next.set("visibility", fs.visibility);
       else next.delete("visibility");
+
+      // Location
+      if (fs.near) next.set("near", fs.near);
+      else next.delete("near");
+      if (fs.locationQuery) next.set("locationQuery", fs.locationQuery);
+      else next.delete("locationQuery");
 
       return next;
     }, { replace: true });
@@ -236,8 +250,16 @@ export function useFilterSearchParams(): {
       return next;
     }, { replace: true });
   }, [setSearchParams]);
+  const removeLocation = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("near");
+      next.delete("locationQuery");
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
-  return { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility };
+  return { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation };
 }
 
 export const CONTENT_TYPES = [
@@ -341,6 +363,10 @@ function FilterSections({
   const { persons, personsLoading, personsError, retryLoadPersons: loadPersons } = personData;
   const [tagSearch, setTagSearch] = useState("");
   const [personSearch, setPersonSearch] = useState("");
+  const [locationInput, setLocationInput] = useState("");
+  const [locationSearching, setLocationSearching] = useState(false);
+  const [locationResults, setLocationResults] = useState<{ display_name: string; lat: string; lon: string }[]>([]);
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   const activeCount = getActiveFilterCount(filters);
 
@@ -363,6 +389,32 @@ function FilterSections({
       ? filters.personIds.filter((id) => id !== personId)
       : [...filters.personIds, personId];
     onFilterChange({ ...filters, personIds: next });
+  };
+
+  const handleLocationSearch = async () => {
+    if (!locationInput.trim() || locationSearching) return;
+    setLocationSearching(true);
+    setLocationError(null);
+    setLocationResults([]);
+    try {
+      const data = await geocodingSearch(locationInput.trim());
+      if (data.length === 0) {
+        setLocationError("No results found");
+      } else {
+        setLocationResults(data);
+      }
+    } catch {
+      setLocationError("Geocoding failed. Try again.");
+    } finally {
+      setLocationSearching(false);
+    }
+  };
+
+  const selectLocationResult = (result: { display_name: string; lat: string; lon: string }) => {
+    const nearValue = `${result.lat},${result.lon},25`;
+    onFilterChange({ ...filters, near: nearValue, locationQuery: result.display_name });
+    setLocationResults([]);
+    setLocationInput("");
   };
 
   const filteredTags =
@@ -537,6 +589,61 @@ function FilterSections({
         )}
       </CollapsibleSection>
 
+      {/* Location */}
+      <CollapsibleSection title="Location">
+        <div className="space-y-2">
+          <div className="flex gap-1">
+            <input
+              type="text"
+              placeholder="Search place name..."
+              value={locationInput}
+              onChange={(e) => setLocationInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleLocationSearch();
+                }
+              }}
+              className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 flex-1"
+            />
+            <button
+              onClick={handleLocationSearch}
+              disabled={locationSearching || !locationInput.trim()}
+              className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-300 text-xs rounded px-2 py-1 transition-colors"
+            >
+              {locationSearching ? "..." : "Go"}
+            </button>
+          </div>
+          {locationError && (
+            <p className="text-[10px] text-amber-400">{locationError}</p>
+          )}
+          {locationResults.length > 0 && (
+            <div className="max-h-32 overflow-y-auto space-y-1">
+              {locationResults.map((result, i) => (
+                <button
+                  key={i}
+                  onClick={() => selectLocationResult(result)}
+                  className="w-full text-left text-xs text-gray-300 hover:bg-gray-700 px-2 py-1 rounded truncate"
+                >
+                  {result.display_name}
+                </button>
+              ))}
+            </div>
+          )}
+          {filters.near && (
+            <div className="flex items-center gap-1 text-xs text-gray-400">
+              <span className="truncate">{filters.locationQuery ?? filters.near}</span>
+              <button
+                onClick={() => onFilterChange({ ...filters, near: null, locationQuery: null })}
+                className="text-gray-500 hover:text-gray-300 shrink-0"
+              >
+                x
+              </button>
+            </div>
+          )}
+        </div>
+      </CollapsibleSection>
+
       {/* Visibility */}
       <CollapsibleSection title="Visibility">
         <div className="space-y-1.5">
@@ -565,6 +672,7 @@ function getActiveFilterCount(filters: FilterState): number {
   if (filters.tagIds.length > 0) count++;
   if (filters.personIds.length > 0) count++;
   if (filters.visibility !== "public") count++;
+  if (filters.near) count++;
   return count;
 }
 

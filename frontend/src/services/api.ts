@@ -707,6 +707,30 @@ export async function pushNameToImmich(personId: string): Promise<{ status: stri
   });
 }
 
+// --- Geocoding (proxied through backend for Nominatim ToS compliance) -------
+
+export interface GeocodingSearchResult {
+  display_name: string;
+  lat: string;
+  lon: string;
+}
+
+export async function geocodingSearch(
+  q: string,
+  limit: number = 5,
+): Promise<GeocodingSearchResult[]> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  return request<GeocodingSearchResult[]>(`/geocoding/search?${params}`);
+}
+
+export async function geocodingReverse(
+  lat: number,
+  lng: number,
+): Promise<{ display_name: string }> {
+  const params = new URLSearchParams({ lat: String(lat), lng: String(lng) });
+  return request<{ display_name: string }>(`/geocoding/reverse?${params}`);
+}
+
 // --- Health -----------------------------------------------------------------
 
 export async function healthCheck(): Promise<{

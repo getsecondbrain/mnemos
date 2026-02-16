@@ -30,12 +30,13 @@ class GeocodingResult:
 
 
 class GeocodingService:
-    """Reverse geocoding via Nominatim (OpenStreetMap).
+    """Forward + reverse geocoding via Nominatim (OpenStreetMap).
 
     Respects Nominatim ToS: max 1 request/second, custom User-Agent.
     """
 
-    NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+    NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
+    NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
     USER_AGENT = "Mnemos/1.0 (self-hosted second brain; contact: admin@localhost)"
     MIN_REQUEST_INTERVAL = 1.0  # seconds — Nominatim ToS
 
@@ -71,7 +72,7 @@ class GeocodingService:
 
             try:
                 response = await self._client.get(
-                    self.NOMINATIM_URL,
+                    self.NOMINATIM_REVERSE_URL,
                     params={
                         "lat": str(lat),
                         "lon": str(lng),
@@ -139,3 +140,51 @@ class GeocodingService:
 
         envelope = encryption_service.encrypt(result.display_name.encode("utf-8"))
         return (envelope.ciphertext.hex(), envelope.encrypted_dek.hex())
+
+    async def forward_geocode(
+        self, query: str, *, limit: int = 5
+    ) -> list[dict[str, str]]:
+        """Forward geocode a place name to coordinates.
+
+        Returns a list of dicts with keys: display_name, lat, lon.
+        Returns empty list if geocoding is disabled or fails.
+        """
+        if not self._enabled:
+            return []
+
+        async with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last_request_time
+            if elapsed < self.MIN_REQUEST_INTERVAL:
+                await asyncio.sleep(self.MIN_REQUEST_INTERVAL - elapsed)
+            self._last_request_time = time.monotonic()
+
+            try:
+                response = await self._client.get(
+                    self.NOMINATIM_SEARCH_URL,
+                    params={
+                        "q": query,
+                        "format": "jsonv2",
+                        "limit": str(limit),
+                        "accept-language": "en",
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+            except Exception:
+                logger.warning(
+                    "Nominatim forward geocode failed for %r",
+                    query,
+                    exc_info=True,
+                )
+                return []
+
+        return [
+            {
+                "display_name": item.get("display_name", ""),
+                "lat": item.get("lat", ""),
+                "lon": item.get("lon", ""),
+            }
+            for item in data
+            if "lat" in item and "lon" in item
+        ]

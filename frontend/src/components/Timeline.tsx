@@ -186,6 +186,7 @@ function ActiveFilterChips({
   onRemoveTag,
   onRemovePerson,
   onResetVisibility,
+  onRemoveLocation,
   onClearAll,
   selectedYear,
   onClearYear,
@@ -198,6 +199,7 @@ function ActiveFilterChips({
   onRemoveTag: (tagId: string) => void;
   onRemovePerson: (personId: string) => void;
   onResetVisibility: () => void;
+  onRemoveLocation: () => void;
   onClearAll: () => void;
   selectedYear: number | null;
   onClearYear: () => void;
@@ -255,6 +257,14 @@ function ActiveFilterChips({
         </span>
       )}
 
+      {/* Location chip */}
+      {filters.near && (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
+          Near: {filters.locationQuery ?? filters.near}
+          <button onClick={onRemoveLocation} className="text-gray-500 hover:text-gray-200 ml-0.5" aria-label="Remove location filter">&times;</button>
+        </span>
+      )}
+
       {/* Clear all */}
       <button onClick={onClearAll} className="text-xs text-gray-500 hover:text-gray-300 underline ml-1">
         Clear all
@@ -275,7 +285,7 @@ export default function Timeline() {
   const [deleting, setDeleting] = useState(false);
 
   // All filter state from Layout's single useFilterSearchParams (via outlet context)
-  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, tagData, personData } = useLayoutFilters();
+  const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation, tagData, personData } = useLayoutFilters();
 
   // Derive selectedYear from date_from/date_to if they represent a full calendar year
   const selectedYear = useMemo(() => {
@@ -350,7 +360,7 @@ export default function Timeline() {
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.contentTypes.join(","), filters.dateFrom, filters.dateTo, filters.tagIds.join(","), filters.personIds.join(","), filters.visibility]);
+  }, [filters.contentTypes.join(","), filters.dateFrom, filters.dateTo, filters.tagIds.join(","), filters.personIds.join(","), filters.visibility, filters.near]);
 
   async function loadInitial(options?: { background?: boolean }) {
     // Cancel any in-flight loadInitial request to prevent race conditions
@@ -377,6 +387,7 @@ export default function Timeline() {
         date_to: filters.dateTo ?? undefined,
         order_by: "captured_at",
         visibility: filters.visibility,
+        near: filters.near ?? undefined,
       });
       if (abortController.signal.aborted || !mountedRef.current) return;
       const decrypted = await decryptMemories(data);
@@ -453,6 +464,7 @@ export default function Timeline() {
         date_to: filters.dateTo ?? undefined,
         order_by: "captured_at",
         visibility: filters.visibility,
+        near: filters.near ?? undefined,
       });
       // If filters changed while we were fetching, discard the stale results
       if (filterGenerationRef.current !== generation) return;
@@ -624,6 +636,7 @@ export default function Timeline() {
           onRemoveTag={removeTagId}
           onRemovePerson={removePersonId}
           onResetVisibility={resetVisibility}
+          onRemoveLocation={removeLocation}
           onClearAll={clearAllFilters}
           selectedYear={selectedYear}
           onClearYear={() => setFilters({ ...filters, dateFrom: null, dateTo: null })}

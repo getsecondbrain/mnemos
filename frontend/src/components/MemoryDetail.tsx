@@ -6,8 +6,24 @@ import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
 import MemoryCardMenu from "./MemoryCardMenu";
 import ConfirmModal from "./ConfirmModal";
+import LocationPickerModal from "./LocationPickerModal";
+import { MapContainer, TileLayer, Marker } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import type { Memory, Connection, MemoryTag as MemoryTagType, Tag } from "../types";
 import type { SourceMeta } from "../services/api";
+
+// Fix Leaflet default icon paths for bundled environments
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
+
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
+});
 
 function hasTimezone(iso: string): boolean {
   return iso.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(iso);
@@ -79,6 +95,9 @@ export default function MemoryDetail() {
   const [documentLoading, setDocumentLoading] = useState(false);
   const [documentError, setDocumentError] = useState(false);
   const [sourceMeta, setSourceMeta] = useState<SourceMeta | null>(null);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [savingLocation, setSavingLocation] = useState(false);
+  const [decryptedPlaceName, setDecryptedPlaceName] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -195,6 +214,23 @@ export default function MemoryDetail() {
       const decrypted = await decryptMemory(data);
       setDisplayTitle(decrypted.title);
       setDisplayContent(decrypted.content);
+
+      // Decrypt place_name if present
+      if (data.place_name && data.place_name_dek) {
+        try {
+          const placeNamePlain = await decrypt({
+            ciphertext: hexToBuffer(data.place_name),
+            encryptedDek: hexToBuffer(data.place_name_dek),
+            algo: data.encryption_algo ?? "aes-256-gcm",
+            version: data.encryption_version ?? 1,
+          });
+          setDecryptedPlaceName(new TextDecoder().decode(placeNamePlain));
+        } catch {
+          setDecryptedPlaceName(null);
+        }
+      } else {
+        setDecryptedPlaceName(null);
+      }
     } catch (err) {
       if (err instanceof Error && "status" in err && (err as { status: number }).status === 404) {
         setNotFound(true);
@@ -392,6 +428,29 @@ export default function MemoryDetail() {
     setEditCapturedAt(toDatetimeLocalValue(memory.captured_at));
     setEditingDate(true);
     setError(null);
+  }
+
+  async function handleLocationSave(lat: number, lng: number, placeName: string) {
+    if (!id || !memory) return;
+    setSavingLocation(true);
+    try {
+      const encoder = new TextEncoder();
+      const placeNameEnvelope = await encrypt(encoder.encode(placeName));
+
+      const updated = await updateMemory(id, {
+        latitude: lat,
+        longitude: lng,
+        place_name: bufferToHex(placeNameEnvelope.ciphertext),
+        place_name_dek: bufferToHex(placeNameEnvelope.encryptedDek),
+      });
+      setMemory(updated);
+      setDecryptedPlaceName(placeName);
+      setShowLocationPicker(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save location.");
+    } finally {
+      setSavingLocation(false);
+    }
   }
 
   async function handleVisibilityChange(_memoryId: string, newVisibility: string) {
@@ -682,6 +741,49 @@ export default function MemoryDetail() {
           </div>
         )}
 
+        {/* Location display (when memory has coordinates) */}
+        {memory.latitude != null && memory.longitude != null && (
+          <div className="mt-6">
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Location</h2>
+            <div className="rounded-lg overflow-hidden border border-gray-700" style={{ height: 200 }}>
+              <MapContainer
+                key={`${memory.latitude},${memory.longitude}`}
+                center={[memory.latitude, memory.longitude]}
+                zoom={13}
+                className="h-full w-full"
+                scrollWheelZoom={false}
+                dragging={false}
+                zoomControl={false}
+                attributionControl={false}
+              >
+                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <Marker position={[memory.latitude, memory.longitude]} />
+              </MapContainer>
+            </div>
+            {decryptedPlaceName && (
+              <p className="text-sm text-gray-400 mt-1">{decryptedPlaceName}</p>
+            )}
+            <button
+              onClick={() => setShowLocationPicker(true)}
+              className="text-xs text-gray-500 hover:text-gray-300 mt-1 transition-colors"
+            >
+              Edit location
+            </button>
+          </div>
+        )}
+
+        {/* Add Location button (when memory lacks both coordinates) */}
+        {(memory.latitude == null || memory.longitude == null) && (
+          <div className="mt-6">
+            <button
+              onClick={() => setShowLocationPicker(true)}
+              className="text-sm text-gray-400 hover:text-gray-200 flex items-center gap-1 transition-colors"
+            >
+              + Add Location
+            </button>
+          </div>
+        )}
+
         <div className="mt-6 text-gray-200 whitespace-pre-wrap">
           {displayContent}
         </div>
@@ -743,6 +845,15 @@ export default function MemoryDetail() {
 
         {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
       </div>
+
+      <LocationPickerModal
+        open={showLocationPicker}
+        initialLat={memory.latitude}
+        initialLng={memory.longitude}
+        onSave={handleLocationSave}
+        onCancel={() => setShowLocationPicker(false)}
+        saving={savingLocation}
+      />
 
       <ConfirmModal
         open={showDeleteConfirm}
