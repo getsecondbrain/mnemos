@@ -198,6 +198,21 @@ export async function deleteMemory(id: string): Promise<void> {
   });
 }
 
+// --- On This Day endpoints ---------------------------------------------------
+
+export async function getOnThisDayMemories(params?: {
+  visibility?: string;
+}): Promise<Memory[]> {
+  const query = new URLSearchParams();
+  if (params?.visibility) query.set("visibility", params.visibility);
+  const qs = query.toString();
+  return request<Memory[]>(`/memories/on-this-day${qs ? `?${qs}` : ""}`);
+}
+
+export async function getMemoryReflect(memoryId: string): Promise<{ prompt: string }> {
+  return request<{ prompt: string }>(`/memories/${memoryId}/reflect`);
+}
+
 // --- Ingest endpoints -------------------------------------------------------
 
 /**

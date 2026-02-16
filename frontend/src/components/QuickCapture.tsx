@@ -16,9 +16,10 @@ interface AttachedFile {
 
 interface QuickCaptureProps {
   onMemoryCreated: () => void;
+  prefill?: { title: string; content: string } | null;
 }
 
-export default function QuickCapture({ onMemoryCreated }: QuickCaptureProps) {
+export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureProps) {
   const [expanded, setExpanded] = useState(false);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
@@ -40,6 +41,14 @@ export default function QuickCapture({ onMemoryCreated }: QuickCaptureProps) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (prefill) {
+      setTitle(prefill.title);
+      setContent(prefill.content);
+      setExpanded(true);
+    }
+  }, [prefill]);
 
   function handleTagAdd(tag: Tag) {
     if (selectedTags.some((t) => t.tag_id === tag.id)) return;
