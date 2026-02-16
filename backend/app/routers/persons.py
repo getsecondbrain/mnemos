@@ -4,10 +4,11 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
+from app.config import get_settings
 from app.db import get_session
 from app.dependencies import require_auth
 from app.models.memory import Memory
@@ -67,6 +68,55 @@ async def list_persons(
     statement = statement.offset(skip).limit(limit)
     persons = session.exec(statement).all()
     return [PersonRead.model_validate(p) for p in persons]
+
+
+@router.post("/sync-immich", status_code=200)
+async def trigger_immich_sync(
+    request: Request,
+    _session_id: str = Depends(require_auth),
+) -> dict:
+    """Trigger an immediate Immich people sync."""
+    settings = get_settings()
+    if not settings.immich_url or not settings.immich_api_key:
+        raise HTTPException(status_code=400, detail="Immich not configured")
+
+    worker = getattr(request.app.state, "worker", None)
+    if worker is None:
+        raise HTTPException(status_code=503, detail="Worker unavailable")
+
+    from app.worker import Job, JobType
+    worker.submit_job(Job(job_type=JobType.IMMICH_SYNC, payload={}))
+    return {"status": "sync_submitted"}
+
+
+@router.post("/{person_id}/push-name-to-immich", status_code=200)
+async def push_name_to_immich(
+    person_id: str,
+    _session_id: str = Depends(require_auth),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Push a person's name from Mnemos back to Immich."""
+    settings = get_settings()
+    if not settings.immich_url or not settings.immich_api_key:
+        raise HTTPException(status_code=400, detail="Immich not configured")
+
+    person = session.get(Person, person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    if not person.immich_person_id:
+        raise HTTPException(status_code=400, detail="Person is not linked to Immich")
+
+    from app.services.immich import ImmichService
+    immich_service = ImmichService(settings)
+
+    success = await immich_service.push_person_name(
+        person_id=person_id, name=person.name, session=session
+    )
+
+    if success:
+        return {"status": "pushed", "immich_person_id": person.immich_person_id}
+    else:
+        raise HTTPException(status_code=502, detail="Failed to push name to Immich")
 
 
 @router.get("/{person_id}", response_model=PersonDetailRead)

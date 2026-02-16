@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     connection_rescan_interval_hours: int = 6
     digest_interval_hours: int = 168  # Weekly
 
+    # Immich integration (self-hosted photo manager)
+    immich_url: str = ""          # e.g. "http://immich:2283" or "https://photos.example.com"
+    immich_api_key: str = ""      # Immich API key (Settings > API Keys in Immich UI)
+    immich_sync_interval_hours: int = 6  # How often to sync people from Immich
+
     # Backup settings
     restic_password: str = ""
     restic_repository_local: str = ""

@@ -44,6 +44,7 @@ class JobType(str, Enum):
     ENRICH_PROMPT = "enrich_prompt"  # Background enrichment prompt loop
     CONNECTION_RESCAN = "connection_rescan"  # Periodic connection re-scan
     DIGEST = "digest"  # Weekly digest generation
+    IMMICH_SYNC = "immich_sync"  # Periodic Immich people sync
 
 
 @dataclass
@@ -249,6 +250,8 @@ class BackgroundWorker:
             self._process_connection_rescan(job.payload)
         elif job.job_type == JobType.DIGEST:
             self._process_digest(job.payload)
+        elif job.job_type == JobType.IMMICH_SYNC:
+            self._process_immich_sync(job.payload)
         else:
             logger.warning("Unknown job type: %s", job.job_type)
 
@@ -1497,3 +1500,84 @@ class BackgroundWorker:
             attempt=attempt, max_attempts=max_attempts,
             completed_at=datetime.now(timezone.utc), job_id=job_id,
         )
+
+    def _process_immich_sync(self, payload: dict) -> None:
+        """Handle IMMICH_SYNC job: sync people and faces from Immich."""
+        job_id = payload.pop("_job_id", None)
+        attempt = payload.pop("_attempt", 1)
+        max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
+
+        job_id = self._persist_job(
+            job_type=JobType.IMMICH_SYNC.value,
+            payload=payload,
+            status=JobStatus.PROCESSING.value,
+            attempt=attempt, max_attempts=max_attempts, job_id=job_id,
+        )
+
+        # Guard: only run if Immich is configured
+        if not self._settings.immich_url or not self._settings.immich_api_key:
+            logger.info("IMMICH_SYNC: skipping — IMMICH_URL not configured")
+            self._persist_job(
+                job_type=JobType.IMMICH_SYNC.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+            return
+
+        loop = asyncio.new_event_loop()
+        try:
+            from app.services.immich import ImmichService
+            immich_service = ImmichService(self._settings)
+            engine = self._get_engine()
+
+            with Session(engine) as db_session:
+                result = loop.run_until_complete(
+                    immich_service.sync_people(db_session)
+                )
+                logger.info(
+                    "IMMICH_SYNC: people sync — created=%d, updated=%d, unchanged=%d, errors=%d",
+                    result.created, result.updated, result.unchanged, result.errors,
+                )
+
+            # Success
+            self._persist_job(
+                job_type=JobType.IMMICH_SYNC.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()
+            err_msg = str(exc)
+            logger.exception("Failed to process IMMICH_SYNC job")
+
+            if attempt >= max_attempts:
+                self._persist_job(
+                    job_type=JobType.IMMICH_SYNC.value,
+                    payload=payload,
+                    status=JobStatus.FAILED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+            else:
+                next_attempt = attempt + 1
+                delay = self._calculate_retry_delay(attempt)
+                retry_at = datetime.now(timezone.utc) + delay
+                self._persist_job(
+                    job_type=JobType.IMMICH_SYNC.value,
+                    payload=payload,
+                    status=JobStatus.PENDING.value,
+                    attempt=next_attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    next_retry_at=retry_at, job_id=job_id,
+                )
+                logger.info(
+                    "Scheduled IMMICH_SYNC retry %d/%d at %s",
+                    next_attempt, max_attempts, retry_at.isoformat(),
+                )
+        finally:
+            loop.close()
