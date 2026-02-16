@@ -45,16 +45,27 @@ def admin_client_fixture(session, encryption_service, vault_service):
     fastapi_app.dependency_overrides[get_encryption_service] = _enc_override
     fastapi_app.dependency_overrides[get_vault_service] = _vault_override
 
-    # Set a mock worker on app.state so worker.submit_job() works
-    orig_worker = getattr(fastapi_app.state, "worker", None)
-    mock_worker = MagicMock()
-    fastapi_app.state.worker = mock_worker
-
     with TestClient(fastapi_app) as tc:
+        # Set mock worker AFTER TestClient enters (lifespan has run),
+        # so we overwrite whatever lifespan set — not the other way around.
+        _had_worker = hasattr(fastapi_app.state, "worker")
+        orig_worker = getattr(fastapi_app.state, "worker", None)
+        mock_worker = MagicMock()
+        fastapi_app.state.worker = mock_worker
+
         yield tc
 
+        # Restore original worker state before exiting the 'with' block
+        # (i.e., before lifespan shutdown runs).
+        if _had_worker:
+            fastapi_app.state.worker = orig_worker
+        else:
+            try:
+                delattr(fastapi_app.state, "worker")
+            except AttributeError:
+                pass
+
     fastapi_app.dependency_overrides.clear()
-    fastapi_app.state.worker = orig_worker
 
 
 @pytest.fixture(name="admin_client_no_auth")
@@ -80,7 +91,22 @@ def admin_client_no_auth_fixture(session, encryption_service, vault_service):
     # Explicitly do NOT override get_current_session_id — auth must fail
 
     with TestClient(fastapi_app) as tc:
+        # Manage app.state.worker the same way admin_client does, so
+        # lifespan shutdown doesn't crash on a real worker set by lifespan.
+        _had_worker = hasattr(fastapi_app.state, "worker")
+        orig_worker = getattr(fastapi_app.state, "worker", None)
+        fastapi_app.state.worker = MagicMock()
+
         yield tc
+
+        if _had_worker:
+            fastapi_app.state.worker = orig_worker
+        else:
+            try:
+                delattr(fastapi_app.state, "worker")
+            except AttributeError:
+                pass
+
     fastapi_app.dependency_overrides.clear()
 
 

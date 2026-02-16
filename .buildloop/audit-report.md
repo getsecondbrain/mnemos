@@ -1,31 +1,54 @@
-# Audit Report — D9.1
+# Audit Report — D9.2
 
 ```json
 {
   "high": [],
   "medium": [
-    {"file": "backend/app/services/preservation.py", "line": 310, "issue": "Dead code path for text/csv and application/json: these MIME types are in _ARCHIVAL_MIMES so they short-circuit at line 171 with conversion_performed=False. The _normalize_text branch at line 310 is unreachable for them, meaning CRLF line endings in CSV/JSON files are never normalized. This is pre-existing (not introduced by D9.1) but worth noting since the PRESERVATION_MAP suggests they should go through processing.", "category": "logic"},
-    {"file": "backend/app/services/preservation.py", "line": 343, "issue": "Pre-existing: _convert_image converts 'P' (palette) mode to RGBA and everything else to RGB. Grayscale images ('L', 'LA') lose their channel structure. 16-bit per channel images are silently downsampled to 8-bit by Pillow's PNG save. Not introduced by D9.1 but affects the conversion path now actually reached for JPEG/HEIC/WebP.", "category": "logic"}
+    {
+      "file": "backend/tests/test_memories.py",
+      "line": 345,
+      "issue": "test_memories.py sets `fastapi_app.state.embedding_service = None` in three places (lines 345, 406, 441) without using the `hasattr`/`delattr` pattern that test_admin.py now uses. If `embedding_service` was never set as an attribute (Qdrant init failed), restoring it to `None` creates the attribute where it didn't exist before. This doesn't crash shutdown currently (no `embedding_service.close()` in shutdown), but it's the same state contamination anti-pattern that D9.2 fixed for `worker`. If a future shutdown cleanup for embedding_service is added, this will cause the same crash.",
+      "category": "error-handling"
+    },
+    {
+      "file": "backend/tests/test_chat.py",
+      "line": 49,
+      "issue": "test_chat.py `mock_ai_services_fixture` (line 44-50) and `no_ai_services_fixture` (line 131-137) both restore `embedding_service` and `llm_service` to `None` when the original was None (attribute never set by lifespan). Same state contamination pattern as the old test_admin.py bug. Not currently a crash risk since shutdown doesn't call methods on these, but inconsistent with the fix applied to test_admin.py.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "backend/tests/test_admin.py",
+      "line": 68,
+      "issue": "dependency_overrides.clear() on line 68 runs AFTER the `with TestClient` block exits, meaning the lifespan shutdown has already run with the overrides still in place. This is correct for the current code, but if a future override (e.g., get_session) is used during shutdown, the override will be active during shutdown but cleared afterward — potentially inconsistent. More importantly, if the TestClient `__exit__` raises an exception, `dependency_overrides.clear()` is never called, leaking overrides to subsequent tests. Consider wrapping in try/finally.",
+      "category": "error-handling"
+    }
   ],
   "low": [
-    {"file": "backend/app/services/preservation.py", "line": 60, "issue": "text/plain maps to 'markdown' in PRESERVATION_MAP and _normalize_text returns 'text/markdown' MIME, but the preserved_data is just UTF-8 normalized text, not actual Markdown syntax. Semantically misleading but functionally harmless. Pre-existing.", "category": "inconsistency"},
-    {"file": "backend/app/services/preservation.py", "line": 446, "issue": "Pre-existing: _convert_document returns application/pdf as preserved_mime but ARCHITECTURE.md specifies PDF/A (ISO 19005). Pandoc's default PDF output is not PDF/A compliant — would need --pdf-engine=xelatex with specific settings or a post-processing step. The D9.1 task doesn't address this but it's an architectural deviation.", "category": "inconsistency"}
+    {
+      "file": "backend/tests/test_admin.py",
+      "line": 308,
+      "issue": "test_reprocess_auth_required asserts `resp.status_code in (401, 403)` which is permissive — it accepts either status code. The docstring says 'should return 401 or 403'. Since `admin_client_no_auth` sends no Authorization header, FastAPI's HTTPBearer(auto_error=True) will raise 403, not 401. The assertion should be `== 403` for precision, but the current permissive check is acceptable since it prevents test breakage if the auth mechanism changes.",
+      "category": "inconsistency"
+    },
+    {
+      "file": "backend/app/main.py",
+      "line": 126,
+      "issue": "The `_vault_integrity_loop` at line 126 and `_loop_scheduler_check` at line 148 both use `getattr(app.state, 'worker', None) is not None` which is consistent with the shutdown fix. However, these same loops do NOT guard access to `app.state.loop_scheduler` with the same pattern (line 148 does check loop_scheduler, but line 126 only checks worker). This is correct since `_vault_integrity_loop` only needs worker, and `_loop_scheduler_check` checks both. Just noting the pattern is correctly applied.",
+      "category": "style"
+    }
   ],
   "validated": [
-    "PRESERVATION_MAP correctly maps all lossy formats to archival targets: image/jpeg→png, audio/mpeg→flac, audio/aac→flac, audio/ogg→flac, video/mp4→ffv1-mkv, video/quicktime→ffv1-mkv, video/webm→ffv1-mkv",
-    "_ARCHIVAL_MIMES contains only truly lossless/archival formats: image/png, image/tiff, audio/flac, audio/wav, text/markdown, text/csv, application/json — no lossy formats present",
-    "_is_already_archival() correctly returns False for all lossy formats, allowing dispatch to _convert_image, _convert_audio, _convert_video",
-    "Conversion dispatch logic (lines 202-247) correctly routes image/, audio/, video/ prefixed MIME types to their respective converters",
-    "_convert_image returns (bytes, 'image/png') — matches PRESERVATION_MAP target",
-    "_convert_audio returns (bytes, 'audio/flac') with ffmpeg -c:a flac — matches PRESERVATION_MAP target",
-    "_convert_video returns (bytes, 'video/x-matroska') with ffmpeg -c:v ffv1 -c:a flac — matches PRESERVATION_MAP target and _PRESERVATION_FORMAT_TO_MIME['ffv1-mkv']",
-    "vault.py _PRESERVATION_FORMAT_TO_MIME has entries for all new preservation_format values (png, flac, ffv1-mkv) — serving endpoint will return correct Content-Type",
-    "Temp file cleanup in all converter methods uses finally blocks with missing_ok=True — no resource leaks",
-    "OCR path for converted images (lines 204-217) correctly runs on the original file_data (pre-conversion JPEG) which Pillow can open, not on the converted PNG bytes",
-    "PreservationResult hardcodes preservation_format='png' (line 224), 'flac' (line 235), 'ffv1-mkv' (line 246) in the conversion branches — consistent with PRESERVATION_MAP values",
-    "No security issues: subprocess calls use list args (no shell injection), temp files use uuid4 names, no user input reaches shell commands unescaped",
-    "Subprocess timeout values (300s for media, 120s for documents) prevent unbounded hangs",
-    "Backward compatibility for existing records: old preservation_format values like 'jpeg', 'mp3' are not in _PRESERVATION_FORMAT_TO_MIME so vault.py falls back to source.mime_type — correct behavior for serving pre-fix records"
+    "main.py line 196: `getattr(app.state, 'worker', None) is not None` correctly handles both the case where the attribute was never set (Qdrant init failed) and where it was set to None (test contamination). This is the core fix for the 199 test ERRORs.",
+    "main.py line 200: `getattr(app.state, 'qdrant_client', None) is not None` applies the same defensive pattern to qdrant_client shutdown, preventing AttributeError if Qdrant init failed.",
+    "main.py line 207: `getattr(app.state, 'geocoding_service', None) is not None` — geocoding_service is initialized outside the try/except block (line 102-103) so it's always set, but the defensive check is still good practice.",
+    "test_admin.py lines 51-66: The `_had_worker`/`delattr` pattern correctly restores app state to its pre-test condition. When worker was never set by lifespan (Qdrant unavailable), `delattr` removes the attribute entirely rather than setting it to None, preventing the hasattr/getattr contamination that caused the original bug.",
+    "test_admin.py lines 96-108: The `admin_client_no_auth` fixture applies the identical `_had_worker`/`delattr` cleanup pattern, consistent with the `admin_client` fixture.",
+    "test_admin.py lines 48-66: The worker mock is set AFTER `TestClient.__enter__` (which runs lifespan startup) and restored BEFORE `TestClient.__exit__` (which runs lifespan shutdown), ensuring the mock doesn't interfere with lifespan initialization or cleanup. This ordering is correct and intentional per the comment on line 49-50.",
+    "main.py lines 84-88: The broad `except Exception` block in the Qdrant/Embedding init correctly catches any Qdrant connection failure, logs it with exc_info=True for debugging, and allows the app to start with AI features disabled. This is the expected degraded-mode behavior.",
+    "main.py lines 118, 140, 173: Background async tasks (sweep, vault integrity, scheduler) are properly created after the Qdrant try/except block. They use `getattr(..., None) is not None` guards before accessing worker/loop_scheduler, so they handle the Qdrant-unavailable case gracefully.",
+    "main.py lines 177-194: All three background tasks are properly cancelled and awaited with CancelledError handling during shutdown, preventing 'task was destroyed but it is pending' warnings.",
+    "BackgroundWorker.stop() (worker.py line 103-108): The stop() method is safe to call — it sets the stop event and joins the thread with a 10s timeout. No risk of hanging shutdown.",
+    "conftest.py was NOT modified — the plan correctly decided against adding an autouse Qdrant mock fixture, since the main.py + test_admin.py fixes are sufficient and adding a mock would start real BackgroundWorker threads in every test."
   ]
 }
 ```

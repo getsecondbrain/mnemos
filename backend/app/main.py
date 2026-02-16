@@ -123,7 +123,7 @@ async def lifespan(app: FastAPI):
         await asyncio.sleep(60)
         while True:
             try:
-                if hasattr(app.state, "worker"):
+                if getattr(app.state, "worker", None) is not None:
                     from app.worker import Job, JobType
                     app.state.worker.submit_job(
                         Job(job_type=JobType.VAULT_INTEGRITY, payload={})
@@ -145,7 +145,7 @@ async def lifespan(app: FastAPI):
         await asyncio.sleep(120)
         while True:
             try:
-                if hasattr(app.state, "worker") and hasattr(app.state, "loop_scheduler"):
+                if getattr(app.state, "worker", None) is not None and getattr(app.state, "loop_scheduler", None) is not None:
                     from app.db import engine as db_engine
                     from app.worker import Job, JobType
 
@@ -193,18 +193,18 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     # Shutdown: stop background worker
-    if hasattr(app.state, "worker"):
+    if getattr(app.state, "worker", None) is not None:
         app.state.worker.stop()
 
     # Shutdown: close Qdrant client
-    if hasattr(app.state, "qdrant_client"):
+    if getattr(app.state, "qdrant_client", None) is not None:
         app.state.qdrant_client.close()
 
     # Shutdown: wipe all in-memory master keys
     auth_state.wipe_all()
 
     # Shutdown: close geocoding HTTP client
-    if hasattr(app.state, "geocoding_service"):
+    if getattr(app.state, "geocoding_service", None) is not None:
         await app.state.geocoding_service.close()
 
 
