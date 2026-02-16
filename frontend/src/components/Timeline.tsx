@@ -5,6 +5,7 @@ import type { TimelineStats } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
 import type { Memory } from "../types";
+import QuickCapture from "./QuickCapture";
 
 function Thumbnail({ sourceId }: { sourceId: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -360,16 +361,15 @@ export default function Timeline() {
 
   if (!timelineStats && memories.length === 0) {
     return (
-      <div className="text-center py-12">
-        <p className="text-gray-400 mb-4">
-          No memories yet. Start by capturing one.
+      <div className="py-6">
+        <QuickCapture onMemoryCreated={handleRefresh} />
+        <p className="text-gray-500 text-center mt-4">
+          No memories yet. Type something above or{" "}
+          <Link to="/capture" className="text-blue-400 hover:text-blue-300 underline">
+            use the full capture page
+          </Link>{" "}
+          to get started.
         </p>
-        <Link
-          to="/capture"
-          className="text-blue-400 hover:text-blue-300 underline"
-        >
-          Go to Capture
-        </Link>
       </div>
     );
   }
@@ -400,6 +400,8 @@ export default function Timeline() {
           </svg>
         </button>
       </div>
+
+      <QuickCapture onMemoryCreated={handleRefresh} />
 
       {/* Timeline bar */}
       {timelineStats && timelineStats.years.length > 0 && (

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type FormEvent, type KeyboardEvent, type DragEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { createMemory, uploadFileWithProgress, ingestUrl, createTag, addTagsToMemory } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { bufferToHex } from "../services/crypto";
@@ -36,10 +36,23 @@ const MAX_UPLOAD_SIZE_MB = 500;
 // Main component
 // ---------------------------------------------------------------------------
 
+const validTabIds = new Set<string>(tabs.map((t) => t.id));
+
 export default function Capture() {
-  const [activeTab, setActiveTab] = useState<TabId>("text");
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const initialTab: TabId = tabParam && validTabIds.has(tabParam) ? (tabParam as TabId) : "text";
+
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [uploads, setUploads] = useState<UploadStatusEntry[]>([]);
   const [isImporting, setIsImporting] = useState(false);
+
+  // Sync tab from URL search params
+  useEffect(() => {
+    if (tabParam && validTabIds.has(tabParam)) {
+      setActiveTab(tabParam as TabId);
+    }
+  }, [tabParam]);
 
   const cancelledRef = useRef(false);
   const fileMapRef = useRef<Map<string, File>>(new Map());
