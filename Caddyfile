@@ -14,7 +14,7 @@
         rate_limit {
             zone api_general {
                 key {client_ip}
-                events 100
+                events 600
                 window 1m
             }
         }

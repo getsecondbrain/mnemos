@@ -1,8 +1,11 @@
-"""Reverse geocoding via Nominatim (OpenStreetMap).
+"""Geocoding service — local reverse + Nominatim forward.
 
-Provides a GeocodingService that resolves GPS coordinates to place names,
-with rate limiting (1 req/sec per Nominatim ToS) and envelope encryption
-for storing the result.
+Reverse geocoding (GPS → place name) uses the `reverse_geocoder` package
+which bundles ~25MB of offline city/country data. No network calls, no
+privacy leak. Results are city-level granularity.
+
+Forward geocoding (place name → GPS) still uses Nominatim (user-initiated,
+not automatic) with rate limiting per their ToS.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import time
 from dataclasses import dataclass
 
 import httpx
+import reverse_geocoder as rg
 
 from app.services.encryption import EncryptionService
 
@@ -23,19 +27,18 @@ logger = logging.getLogger(__name__)
 class GeocodingResult:
     """Result of reverse geocoding."""
 
-    display_name: str  # e.g. "Berlin, Germany"
+    display_name: str  # e.g. "Berlin, Berlin, DE"
     city: str | None  # e.g. "Berlin"
-    country: str | None  # e.g. "Germany"
-    raw_response: dict  # Full Nominatim JSON response
+    country: str | None  # e.g. "DE" (ISO 3166-1 alpha-2 country code)
 
 
 class GeocodingService:
-    """Forward + reverse geocoding via Nominatim (OpenStreetMap).
+    """Geocoding: local reverse (offline) + Nominatim forward (user-initiated).
 
-    Respects Nominatim ToS: max 1 request/second, custom User-Agent.
+    Reverse geocode is fully offline via the `reverse_geocoder` package.
+    Forward geocode uses Nominatim with rate limiting (1 req/sec per ToS).
     """
 
-    NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
     NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
     USER_AGENT = "Mnemos/1.0 (self-hosted second brain; contact: admin@localhost)"
     MIN_REQUEST_INTERVAL = 1.0  # seconds — Nominatim ToS
@@ -53,88 +56,53 @@ class GeocodingService:
         """Close the shared HTTP client."""
         await self._client.aclose()
 
-    async def reverse_geocode(self, lat: float, lng: float) -> GeocodingResult | None:
-        """Reverse geocode lat/lng to a place name.
+    def reverse_geocode(self, lat: float, lng: float) -> GeocodingResult | None:
+        """Reverse geocode lat/lng to a place name using local data.
 
-        Returns None if geocoding is disabled, the request fails, or
-        Nominatim returns no result. Never raises — errors are logged.
+        Fully offline — uses the `reverse_geocoder` package with bundled
+        city/country data (~25MB). No network calls, no privacy leak.
+
+        Returns None if geocoding is disabled or lookup fails.
         """
         if not self._enabled:
             return None
 
-        async with self._lock:
-            # Rate limiting: enforce 1 req/sec
-            now = time.monotonic()
-            elapsed = now - self._last_request_time
-            if elapsed < self.MIN_REQUEST_INTERVAL:
-                await asyncio.sleep(self.MIN_REQUEST_INTERVAL - elapsed)
-            self._last_request_time = time.monotonic()
-
-            try:
-                response = await self._client.get(
-                    self.NOMINATIM_REVERSE_URL,
-                    params={
-                        "lat": str(lat),
-                        "lon": str(lng),
-                        "format": "jsonv2",
-                        "zoom": 10,  # city-level detail
-                        "accept-language": "en",
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-            except Exception:
-                logger.warning(
-                    "Nominatim reverse geocode failed for (%s, %s)",
-                    lat,
-                    lng,
-                    exc_info=True,
-                )
+        try:
+            results = rg.search((lat, lng))
+            if not results:
                 return None
 
-        if "error" in data:
-            logger.debug(
-                "Nominatim returned error for (%s, %s): %s",
+            result = results[0]
+            city = result.get("name")
+            admin1 = result.get("admin1", "")  # state/province
+            cc = result.get("cc", "")  # country code
+
+            # Build display name: "City, State, CC" or "City, CC"
+            parts = [p for p in [city, admin1, cc] if p]
+            display_name = ", ".join(parts) if parts else f"{lat}, {lng}"
+
+            return GeocodingResult(
+                display_name=display_name,
+                city=city,
+                country=cc,
+            )
+        except Exception:
+            logger.warning(
+                "Local reverse geocode failed for (%s, %s)",
                 lat,
                 lng,
-                data["error"],
+                exc_info=True,
             )
             return None
 
-        # Build display name: prefer "city, country" format
-        address = data.get("address", {})
-        city = (
-            address.get("city")
-            or address.get("town")
-            or address.get("village")
-            or address.get("municipality")
-        )
-        country = address.get("country")
-
-        if city and country:
-            display_name = f"{city}, {country}"
-        elif city:
-            display_name = city
-        elif country:
-            display_name = country
-        else:
-            display_name = data.get("display_name", f"{lat}, {lng}")
-
-        return GeocodingResult(
-            display_name=display_name,
-            city=city,
-            country=country,
-            raw_response=data,
-        )
-
-    async def reverse_geocode_and_encrypt(
+    def reverse_geocode_and_encrypt(
         self, lat: float, lng: float, encryption_service: EncryptionService
     ) -> tuple[str, str] | None:
         """Reverse geocode and return (place_name_hex, place_name_dek_hex).
 
         Returns None if geocoding fails or is disabled.
         """
-        result = await self.reverse_geocode(lat, lng)
+        result = self.reverse_geocode(lat, lng)
         if result is None:
             return None
 
@@ -144,7 +112,10 @@ class GeocodingService:
     async def forward_geocode(
         self, query: str, *, limit: int = 5
     ) -> list[dict[str, str]]:
-        """Forward geocode a place name to coordinates.
+        """Forward geocode a place name to coordinates via Nominatim.
+
+        This is user-initiated (they type a place name), so Nominatim is
+        acceptable here — no automatic GPS coordinate leaking.
 
         Returns a list of dicts with keys: display_name, lat, lon.
         Returns empty list if geocoding is disabled or fails.

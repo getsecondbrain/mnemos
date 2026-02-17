@@ -32,6 +32,9 @@ GitPython>=3.1,<4.0
 # Image processing
 Pillow>=11,<12
 
+# Offline reverse geocoding (GPS → city/country, ~25MB bundled data)
+reverse_geocoder>=1.5,<2.0
+
 # PDF text extraction
 pdfplumber>=0.10,<1.0
 

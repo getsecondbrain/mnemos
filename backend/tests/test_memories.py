@@ -111,14 +111,14 @@ def test_update_memory_partial(client):
 
 
 def test_delete_memory(client):
-    """DELETE /api/memories/{id} should return 204 and remove the memory."""
+    """DELETE /api/memories/{id} should soft-delete and return 200."""
     create_resp = client.post("/api/memories", json={"title": "Delete Me", "content": "Body"})
     memory_id = create_resp.json()["id"]
 
     response = client.delete(f"/api/memories/{memory_id}")
-    assert response.status_code == 204
+    assert response.status_code == 200
 
-    # Verify it's gone
+    # Verify it's no longer returned by GET (soft-deleted)
     get_resp = client.get(f"/api/memories/{memory_id}")
     assert get_resp.status_code == 404
 

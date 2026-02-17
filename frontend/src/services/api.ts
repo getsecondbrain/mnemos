@@ -241,6 +241,12 @@ export async function getMemoryReflect(memoryId: string): Promise<{ prompt: stri
   return request<{ prompt: string }>(`/memories/${memoryId}/reflect`);
 }
 
+export async function reprocessExif(memoryId: string): Promise<Memory> {
+  return request<Memory>(`/memories/${memoryId}/reprocess-exif`, {
+    method: "POST",
+  });
+}
+
 // --- Ingest endpoints -------------------------------------------------------
 
 /**

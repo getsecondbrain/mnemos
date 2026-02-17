@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # OCR settings
     ocr_enabled: bool = True  # Set to False if tesseract is not installed
     # Geocoding settings
-    geocoding_enabled: bool = True  # Reverse geocode GPS coords via Nominatim (1 req/sec)
+    geocoding_enabled: bool = True  # Reverse geocode GPS coords locally via reverse_geocoder
     # Background AI loop intervals
     tag_suggest_interval_hours: int = 24
     enrich_interval_hours: int = 24

@@ -7,6 +7,7 @@ POST /api/ingest/url   — URL import (fetch, extract, store)
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -23,10 +24,10 @@ from app.dependencies import (
     get_vault_service,
     require_auth,
 )
-from app.services.geocoding import GeocodingService
 from app.models.memory import Memory
 from app.models.source import Source
 from app.services.encryption import EncryptionService
+from app.services.geocoding import GeocodingService
 from app.services.git_ops import GitOpsService
 from app.services.ingestion import IngestionService
 from app.services.vault import VaultService
@@ -72,11 +73,12 @@ async def ingest_file(
     request: Request,
     file: UploadFile = File(...),
     captured_at: str | None = Form(None),
+    parent_id: str | None = Form(None),
     _session_id: str = Depends(require_auth),
     enc: EncryptionService = Depends(get_encryption_service),
     ingestion: IngestionService = Depends(get_ingestion_service),
-    vault_svc: VaultService = Depends(get_vault_service),
     geocoding: GeocodingService = Depends(get_geocoding_service),
+    vault_svc: VaultService = Depends(get_vault_service),
     session: Session = Depends(get_session),
 ) -> IngestResponse:
     """Ingest a file via multipart upload."""
@@ -99,6 +101,12 @@ async def ingest_file(
             parsed_captured_at = datetime.fromisoformat(captured_at)
         except ValueError:
             raise HTTPException(422, "Invalid captured_at datetime format")
+
+    # Validate parent_id references an existing, non-deleted memory
+    if parent_id:
+        existing_parent = session.get(Memory, parent_id)
+        if existing_parent is None or existing_parent.deleted_at is not None:
+            raise HTTPException(422, "parent_id does not reference an existing memory")
 
     filename = file.filename or "unknown"
 
@@ -135,27 +143,19 @@ async def ingest_file(
         content_hash=result.content_hash,
         latitude=result.latitude,
         longitude=result.longitude,
+        parent_id=parent_id,
+        metadata_json=json.dumps(result.exif_metadata) if result.exif_metadata else None,
     )
     session.add(memory)
     session.flush()  # Get memory.id before creating Source
 
-    # Reverse geocode GPS coordinates to place name (best-effort)
+    # Local reverse geocode if GPS coordinates exist (offline, no external API)
     if result.latitude is not None and result.longitude is not None:
-        try:
-            place = await geocoding.reverse_geocode_and_encrypt(
-                result.latitude, result.longitude, enc
-            )
-            if place is not None:
-                memory.place_name = place[0]
-                memory.place_name_dek = place[1]
-                session.add(memory)
-                session.flush()
-        except Exception:
-            logger.warning(
-                "Reverse geocoding failed for memory %s (lat=%s, lng=%s)",
-                memory.id, result.latitude, result.longitude,
-                exc_info=True,
-            )
+        geo_result = geocoding.reverse_geocode_and_encrypt(
+            result.latitude, result.longitude, enc
+        )
+        if geo_result:
+            memory.place_name, memory.place_name_dek = geo_result
 
     # Get encrypted file size on disk
     file_size = vault_svc.get_encrypted_size(result.original_vault_path)
@@ -192,6 +192,25 @@ async def ingest_file(
     session.commit()
     session.refresh(memory)
     session.refresh(source)
+
+    # Propagate EXIF data to parent memory (if this is a child photo)
+    if parent_id and result.content_type == "photo":
+        parent_mem = session.get(Memory, parent_id)
+        if parent_mem:
+            changed = False
+            if result.latitude is not None and result.longitude is not None and parent_mem.latitude is None:
+                parent_mem.latitude = result.latitude
+                parent_mem.longitude = result.longitude
+                if memory.place_name:
+                    parent_mem.place_name = memory.place_name
+                    parent_mem.place_name_dek = memory.place_name_dek
+                changed = True
+            if result.exif_metadata and not parent_mem.metadata_json:
+                parent_mem.metadata_json = json.dumps(result.exif_metadata)
+                changed = True
+            if changed:
+                session.add(parent_mem)
+                session.commit()
 
     # Git version tracking
     try:

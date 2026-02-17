@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from math import cos, radians
@@ -10,14 +11,18 @@ from sqlmodel import Session, func, or_, select
 
 from app.config import get_settings
 from app.db import get_session
-from app.dependencies import get_encryption_service, get_llm_service, require_auth
+from app.dependencies import get_encryption_service, get_geocoding_service, get_llm_service, get_vault_service, require_auth
 from app.models.memory import Memory, MemoryChildInfo, MemoryCreate, MemoryRead, MemoryTagInfo, MemoryUpdate
 from app.models.person import MemoryPerson
 from app.models.reflection import ReflectionPrompt
+from app.models.source import Source
 from app.models.tag import MemoryTag, Tag
 from app.services.encryption import EncryptedEnvelope, EncryptionService
+from app.services.geocoding import GeocodingService
 from app.services.git_ops import GitOpsService
+from app.services.ingestion import IngestionService
 from app.services.llm import LLMError, LLMService
+from app.services.vault import VaultService
 
 from sqlalchemy.exc import IntegrityError
 
@@ -576,6 +581,87 @@ async def undelete_memory(
     for m in all_memories:
         m.deleted_at = None
         session.add(m)
+    session.commit()
+    session.refresh(memory)
+
+    return _attach_tags([memory], session)[0]
+
+
+@router.post("/{memory_id}/reprocess-exif", response_model=MemoryRead)
+async def reprocess_exif(
+    memory_id: str,
+    _session_id: str = Depends(require_auth),
+    enc: EncryptionService = Depends(get_encryption_service),
+    vault_svc: VaultService = Depends(get_vault_service),
+    geocoding: GeocodingService = Depends(get_geocoding_service),
+    session: Session = Depends(get_session),
+) -> MemoryRead:
+    """Re-extract EXIF data from a photo memory's vault file.
+
+    Updates latitude, longitude, place_name, and metadata_json on the memory.
+    All processing is local — EXIF via Pillow, reverse geocoding via offline
+    `reverse_geocoder` database. No external API calls.
+    Works on photo memories directly, or on parent memories that have photo children
+    (extracts EXIF from the first photo child).
+    """
+    memory = session.get(Memory, memory_id)
+    if not memory or memory.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    # Find a photo source to extract EXIF from:
+    # 1. If this memory is itself a photo with a source, use it
+    # 2. Otherwise, look for a photo child with a source
+    source: Source | None = None
+    if memory.content_type == "photo" and memory.source_id:
+        source = session.get(Source, memory.source_id)
+    if not source:
+        # Search children for a photo with a source
+        child_photos = session.exec(
+            select(Memory)
+            .where(Memory.parent_id == memory_id)
+            .where(Memory.deleted_at == None)  # noqa: E711
+            .where(Memory.content_type == "photo")
+            .where(Memory.source_id != None)  # noqa: E711
+            .order_by(Memory.created_at, Memory.id)
+        ).all()
+        for child in child_photos:
+            source = session.get(Source, child.source_id)
+            if source:
+                break
+
+    if not source:
+        raise HTTPException(status_code=422, detail="No photo source found to extract EXIF data from")
+
+    # Decrypt the original file from the vault
+    try:
+        file_data = vault_svc.retrieve_file(source.vault_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=422, detail="Vault file not found")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid vault path")
+    except Exception:
+        logger.exception("Failed to decrypt vault file for source %s", source.id)
+        raise HTTPException(status_code=500, detail="Failed to read vault file")
+
+    # Extract EXIF GPS and metadata — fully local, no external API calls
+    lat, lng = IngestionService._extract_gps_from_exif(file_data)
+    exif_metadata = IngestionService._extract_exif_metadata(file_data)
+
+    # Update memory fields
+    if lat is not None and lng is not None:
+        memory.latitude = lat
+        memory.longitude = lng
+
+        # Local reverse geocode (offline, no external API)
+        geo_result = geocoding.reverse_geocode_and_encrypt(lat, lng, enc)
+        if geo_result:
+            memory.place_name, memory.place_name_dek = geo_result
+
+    if exif_metadata:
+        memory.metadata_json = json.dumps(exif_metadata)
+
+    memory.updated_at = datetime.now(timezone.utc)
+    session.add(memory)
     session.commit()
     session.refresh(memory)
 

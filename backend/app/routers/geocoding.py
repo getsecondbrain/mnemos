@@ -1,9 +1,8 @@
-"""Geocoding proxy router — proxies Nominatim requests through the backend.
+"""Geocoding proxy router.
 
-Browser fetch() cannot set the User-Agent header (it's a forbidden header
-per the Fetch spec), but Nominatim requires an identifying User-Agent per
-their usage policy. This router proxies requests so the backend can set
-the proper headers server-side.
+Reverse geocode uses the local `reverse_geocoder` package (no network calls).
+Forward geocode proxies Nominatim requests through the backend so it can set
+the proper User-Agent header (forbidden header per the Fetch spec in browsers).
 """
 from __future__ import annotations
 
@@ -32,8 +31,8 @@ async def reverse_geocode(
     lng: float = Query(..., ge=-180, le=180),
     geocoding_service: GeocodingService = Depends(get_geocoding_service),
 ) -> dict[str, str | None]:
-    """Reverse geocode coordinates to a place name via Nominatim."""
-    result = await geocoding_service.reverse_geocode(lat, lng)
+    """Reverse geocode coordinates to a place name (local, offline)."""
+    result = geocoding_service.reverse_geocode(lat, lng)
     if result is None:
         raise HTTPException(status_code=502, detail="Geocoding failed or is disabled")
     return {"display_name": result.display_name}

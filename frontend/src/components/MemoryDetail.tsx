@@ -1,6 +1,6 @@
-import { Component, useState, useEffect, useCallback, lazy, Suspense, type FormEvent, type ReactNode } from "react";
+import { Component, useState, useEffect, useCallback, useRef, lazy, Suspense, type FormEvent, type ReactNode } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag, fetchVaultFile, fetchPreservedVaultFile, fetchSourceMeta } from "../services/api";
+import { getMemory, updateMemory, deleteMemory, getConnections, getMemoryTags, addTagsToMemory, removeTagFromMemory, createTag, fetchVaultFile, fetchPreservedVaultFile, fetchSourceMeta, uploadFileWithProgress } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer, bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
@@ -73,9 +73,29 @@ function _mimeToExt(mime: string): string {
   return map[mime] ?? ".bin";
 }
 
-function ChildPhotoCarousel({ children }: { children: { id: string; source_id: string | null; content_type: string }[] }) {
+const MAX_UPLOAD_SIZE_MB = 500;
+
+interface AttachedFile {
+  id: string;
+  file: File;
+  previewUrl: string | null;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ChildPhotoCarousel({ children, onDelete }: {
+  children: { id: string; source_id: string | null; content_type: string }[];
+  onDelete?: (childId: string) => void;
+}) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [photoUrls, setPhotoUrls] = useState<Map<string, string>>(new Map());
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     const urls = new Map<string, string>();
@@ -117,6 +137,17 @@ function ChildPhotoCarousel({ children }: { children: { id: string; source_id: s
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  // Clamp index when children array changes (e.g. after delete + reload)
+  useEffect(() => {
+    setCurrentIndex((prev) =>
+      children.length === 0 ? 0 : Math.min(prev, children.length - 1)
+    );
+    // Dismiss stale confirm if the targeted child no longer exists
+    setConfirmDeleteId((prev) =>
+      prev && children.some((c) => c.id === prev) ? prev : null
+    );
+  }, [children]);
 
   const currentChild = children[currentIndex];
   const currentUrl = currentChild ? photoUrls.get(currentChild.id) : null;
@@ -162,6 +193,59 @@ function ChildPhotoCarousel({ children }: { children: { id: string; source_id: s
             </svg>
           </button>
         )}
+
+        {/* Delete button */}
+        {onDelete && currentChild && (
+          <div className="absolute top-2 right-2 z-10">
+            {confirmDeleteId === currentChild.id ? (
+              <div className="flex items-center gap-1.5 bg-black/80 rounded-lg px-2 py-1.5">
+                <button
+                  onClick={async () => {
+                    const targetId = confirmDeleteId;
+                    if (!targetId) return;
+                    setDeleting(true);
+                    setDeleteError(null);
+                    try {
+                      await onDelete(targetId);
+                      setConfirmDeleteId(null);
+                    } catch (err) {
+                      setDeleteError(err instanceof Error ? err.message : "Delete failed.");
+                    } finally {
+                      setDeleting(false);
+                    }
+                  }}
+                  disabled={deleting}
+                  className="text-xs text-red-400 hover:text-red-300 font-medium disabled:opacity-50"
+                >
+                  {deleting ? "Deleting..." : "Delete"}
+                </button>
+                <button
+                  onClick={() => { setConfirmDeleteId(null); setDeleteError(null); }}
+                  disabled={deleting}
+                  className="text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setConfirmDeleteId(currentChild.id); setDeleteError(null); }}
+                className="w-8 h-8 flex items-center justify-center bg-black/50 hover:bg-red-600/80 text-white/70 hover:text-white rounded-full transition-colors"
+                aria-label="Delete this photo"
+                title="Delete this photo"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+        {deleteError && (
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 bg-black/80 rounded-lg px-3 py-1.5">
+            <p className="text-red-400 text-xs">{deleteError}</p>
+          </div>
+        )}
       </div>
 
       {/* Photo counter & thumbnail dots */}
@@ -188,6 +272,54 @@ function ChildPhotoCarousel({ children }: { children: { id: string; source_id: s
   );
 }
 
+function EditChildThumbnail({ sourceId, isMarked }: { sourceId: string | null; isMarked: boolean }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!sourceId) return;
+    let revoked = false;
+    setFailed(false);
+    fetchVaultFile(sourceId)
+      .then((blob) => {
+        if (revoked) return;
+        setUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => {
+        if (!revoked) setFailed(true);
+      });
+    return () => {
+      revoked = true;
+      setUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    };
+  }, [sourceId]);
+
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt="attachment"
+        className={`w-20 h-20 object-cover ${isMarked ? "grayscale" : ""}`}
+      />
+    );
+  }
+
+  return (
+    <div className="w-20 h-20 flex items-center justify-center bg-gray-700">
+      {failed ? (
+        <svg className="w-6 h-6 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.41a2.25 2.25 0 013.182 0l2.909 2.91m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
+        </svg>
+      ) : (
+        <p className="text-gray-500 text-[9px]">Loading...</p>
+      )}
+    </div>
+  );
+}
+
 export default function MemoryDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -205,6 +337,18 @@ export default function MemoryDetail() {
   const [editContent, setEditContent] = useState("");
   const [saving, setSaving] = useState(false);
 
+  const [editAttachments, setEditAttachments] = useState<AttachedFile[]>([]);
+  const [childrenToRemove, setChildrenToRemove] = useState<Set<string>>(new Set());
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
+  const editAttachmentsRef = useRef(editAttachments);
+  editAttachmentsRef.current = editAttachments;
+
+  const [draggingOver, setDraggingOver] = useState(false);
+  const [dropUploading, setDropUploading] = useState(false);
+  const [dropProgress, setDropProgress] = useState<string | null>(null);
+  const dragCounterRef = useRef(0);
+
   const [editingDate, setEditingDate] = useState(false);
   const [editCapturedAt, setEditCapturedAt] = useState("");
   const [savingDate, setSavingDate] = useState(false);
@@ -215,6 +359,8 @@ export default function MemoryDetail() {
   const [connectionsLoading, setConnectionsLoading] = useState(false);
 
   const [memoryTags, setMemoryTags] = useState<MemoryTagType[]>([]);
+  const [editTags, setEditTags] = useState<MemoryTagType[]>([]);
+  const [tagsLoadError, setTagsLoadError] = useState(false);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const [documentLoading, setDocumentLoading] = useState(false);
@@ -231,6 +377,15 @@ export default function MemoryDetail() {
     loadTags(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Revoke edit-attachment preview URLs on unmount
+  useEffect(() => {
+    return () => {
+      for (const att of editAttachmentsRef.current) {
+        if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      }
+    };
+  }, []);
 
   // Fetch vault file for photo/document memories
   useEffect(() => {
@@ -421,53 +576,101 @@ export default function MemoryDetail() {
   }
 
   async function loadTags(memoryId: string) {
+    setTagsLoadError(false);
     try {
       const tags = await getMemoryTags(memoryId);
       setMemoryTags(tags);
     } catch {
-      // Silently ignore — tags are supplementary
+      setTagsLoadError(true);
     }
   }
 
-  async function handleTagAdd(tag: Tag) {
-    if (!id) return;
-    try {
-      const updated = await addTagsToMemory(id, [tag.id]);
-      setMemoryTags(updated);
-    } catch {
-      // ignore
-    }
+  // Edit-mode tag handlers — buffer changes locally, persist on Save
+  function handleEditTagAdd(tag: Tag) {
+    if (editTags.some((t) => t.tag_id === tag.id)) return;
+    setEditTags((prev) => [
+      ...prev,
+      { tag_id: tag.id, tag_name: tag.name, tag_color: tag.color, created_at: tag.created_at },
+    ]);
   }
 
-  async function handleTagRemove(tagId: string) {
-    if (!id) return;
-    try {
-      await removeTagFromMemory(id, tagId);
-      setMemoryTags((prev) => prev.filter((t) => t.tag_id !== tagId));
-    } catch {
-      // ignore
-    }
+  function handleEditTagRemove(tagId: string) {
+    setEditTags((prev) => prev.filter((t) => t.tag_id !== tagId));
   }
 
-  async function handleCreateAndAddTag(name: string) {
-    if (!id) return;
+  async function handleEditCreateAndAddTag(name: string) {
     const tag = await createTag({ name });
-    const updated = await addTagsToMemory(id, [tag.id]);
-    setMemoryTags(updated);
+    setEditTags((prev) => [
+      ...prev,
+      { tag_id: tag.id, tag_name: tag.name, tag_color: tag.color, created_at: tag.created_at },
+    ]);
   }
 
   function startEditing() {
     if (!memory) return;
     setEditTitle(displayTitle);
     setEditContent(displayContent);
+    setEditTags([...memoryTags]);
     setEditing(true);
     setEditingDate(false);
     setError(null);
   }
 
   function cancelEditing() {
+    for (const att of editAttachments) {
+      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+    }
+    setEditAttachments([]);
+    setChildrenToRemove(new Set());
+    setUploadProgress(null);
+    setShowLocationPicker(false);
     setEditing(false);
     setError(null);
+  }
+
+  function handleEditFilesSelected(files: FileList | File[]) {
+    const maxBytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024;
+    const newAttachments: AttachedFile[] = [];
+    let sizeError: string | null = null;
+
+    for (const file of Array.from(files)) {
+      if (file.size > maxBytes) {
+        const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+        sizeError = `${file.name} is too large (${sizeMB}MB). Max ${MAX_UPLOAD_SIZE_MB}MB.`;
+        continue;
+      }
+
+      const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
+      newAttachments.push({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl,
+      });
+    }
+
+    // Clear stale errors when valid files are added; show size error only if one occurred
+    setError(sizeError);
+    setEditAttachments((prev) => [...prev, ...newAttachments]);
+  }
+
+  function handleRemoveEditAttachment(attId: string) {
+    setEditAttachments((prev) => {
+      const removed = prev.find((a) => a.id === attId);
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((a) => a.id !== attId);
+    });
+  }
+
+  function toggleChildRemoval(childId: string) {
+    setChildrenToRemove((prev) => {
+      const next = new Set(prev);
+      if (next.has(childId)) {
+        next.delete(childId);
+      } else {
+        next.add(childId);
+      }
+      return next;
+    });
   }
 
   async function handleSave(e: FormEvent) {
@@ -477,11 +680,13 @@ export default function MemoryDetail() {
     setSaving(true);
     setError(null);
     try {
+      // 1. Encrypt & save text
+      setUploadProgress("Encrypting text...");
       const encoder = new TextEncoder();
       const titleEnvelope = await encrypt(encoder.encode(editTitle.trim()));
       const contentEnvelope = await encrypt(encoder.encode(editContent.trim()));
 
-      const updated = await updateMemory(id, {
+      await updateMemory(id, {
         title: bufferToHex(titleEnvelope.ciphertext),
         content: bufferToHex(contentEnvelope.ciphertext),
         title_dek: bufferToHex(titleEnvelope.encryptedDek),
@@ -489,12 +694,50 @@ export default function MemoryDetail() {
         encryption_algo: titleEnvelope.algo,
         encryption_version: titleEnvelope.version,
       });
-      setMemory(updated);
       setDisplayTitle(editTitle.trim());
       setDisplayContent(editContent.trim());
+
+      // 2. Persist tag changes (diff editTags vs memoryTags)
+      const originalTagIds = new Set(memoryTags.map((t) => t.tag_id));
+      const editTagIds = new Set(editTags.map((t) => t.tag_id));
+      const tagsToAdd = editTags.filter((t) => !originalTagIds.has(t.tag_id)).map((t) => t.tag_id);
+      const tagsToRemove = memoryTags.filter((t) => !editTagIds.has(t.tag_id)).map((t) => t.tag_id);
+      if (tagsToAdd.length > 0) {
+        await addTagsToMemory(id, tagsToAdd);
+      }
+      for (const tagId of tagsToRemove) {
+        await removeTagFromMemory(id, tagId);
+      }
+      setMemoryTags([...editTags]);
+
+      // 3. Upload new attachments sequentially, removing from state after each
+      //    success so a retry won't re-upload already-succeeded files.
+      const totalAttachments = editAttachments.length;
+      for (let idx = 0; idx < totalAttachments; idx++) {
+        const att = editAttachments[idx]!;
+        setUploadProgress(`Uploading ${att.file.name} (${idx + 1}/${totalAttachments})...`);
+        await uploadFileWithProgress(att.file, undefined, undefined, memory.id);
+        if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+        setEditAttachments((prev) => prev.filter((a) => a.id !== att.id));
+      }
+
+      // 4. Soft-delete removed children
+      if (childrenToRemove.size > 0) {
+        setUploadProgress("Removing attachments...");
+        for (const childId of childrenToRemove) {
+          await deleteMemory(childId);
+        }
+      }
+
+      // 5. Clean up and reload
+      setEditAttachments([]);
+      setChildrenToRemove(new Set());
+      setUploadProgress(null);
       setEditing(false);
+      await loadMemory(id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save changes.");
+      setUploadProgress(null);
     } finally {
       setSaving(false);
     }
@@ -581,6 +824,97 @@ export default function MemoryDetail() {
     }
   }
 
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) {
+      setDraggingOver(true);
+    }
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setDraggingOver(false);
+    }
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  async function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setDraggingOver(false);
+
+    if (!id || !memory || dropUploading) return;
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    const maxBytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024;
+    const skipped: string[] = [];
+    const validFiles = files.filter((f) => {
+      if (f.size > maxBytes) {
+        skipped.push(`${f.name} (${(f.size / (1024 * 1024)).toFixed(1)}MB)`);
+        return false;
+      }
+      return true;
+    });
+
+    if (skipped.length > 0 && validFiles.length === 0) {
+      setError(`Too large (max ${MAX_UPLOAD_SIZE_MB}MB): ${skipped.join(", ")}`);
+      return;
+    }
+
+    setDropUploading(true);
+    // Show size warnings alongside upload progress instead of clearing them
+    if (skipped.length > 0) {
+      setError(`Skipped (too large): ${skipped.join(", ")}`);
+    } else {
+      setError(null);
+    }
+
+    let uploaded = 0;
+    try {
+      for (let i = 0; i < validFiles.length; i++) {
+        const file = validFiles[i]!;
+        setDropProgress(
+          validFiles.length === 1
+            ? `Uploading ${file.name}...`
+            : `Uploading ${file.name} (${i + 1}/${validFiles.length})...`
+        );
+        await uploadFileWithProgress(file, undefined, undefined, memory.id);
+        uploaded++;
+      }
+      setDropProgress(null);
+      await loadMemory(id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Upload failed.";
+      setError(uploaded > 0 ? `${msg} (${uploaded} file(s) uploaded before error)` : msg);
+      setDropProgress(null);
+      // Reload to show any children that were successfully created
+      if (uploaded > 0) {
+        try { await loadMemory(id); } catch { /* best effort */ }
+      }
+    } finally {
+      setDropUploading(false);
+    }
+  }
+
+  const dragProps = {
+    onDragEnter: handleDragEnter,
+    onDragLeave: handleDragLeave,
+    onDragOver: handleDragOver,
+    onDrop: handleDrop,
+  };
+
   if (loading) {
     return <p className="text-gray-400">Loading...</p>;
   }
@@ -614,6 +948,8 @@ export default function MemoryDetail() {
   }
 
   if (editing) {
+    const existingChildren = memory.children ?? [];
+
     return (
       <div className="max-w-2xl mx-auto">
         <h2 className="text-2xl font-bold text-gray-100 mb-6">Edit Memory</h2>
@@ -634,30 +970,221 @@ export default function MemoryDetail() {
               className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-md text-gray-100 focus:ring-2 focus:ring-blue-500 focus:outline-none resize-y"
             />
           </div>
+
+          {/* Existing children attachments */}
+          {existingChildren.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Attachments</h3>
+              <div className="flex flex-wrap gap-2">
+                {existingChildren.map((child) => {
+                  const isMarked = childrenToRemove.has(child.id);
+                  return (
+                    <div
+                      key={child.id}
+                      className={`relative group bg-gray-800 border rounded-md overflow-hidden ${
+                        isMarked ? "border-red-700 opacity-50" : "border-gray-700"
+                      }`}
+                    >
+                      {child.content_type === "photo" ? (
+                        <EditChildThumbnail sourceId={child.source_id} isMarked={isMarked} />
+                      ) : (
+                        <div className={`w-20 h-20 flex flex-col items-center justify-center p-1 ${isMarked ? "line-through" : ""}`}>
+                          <svg className="w-6 h-6 text-gray-500 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                          </svg>
+                          <span className="text-[9px] text-gray-400 truncate w-full text-center">{child.content_type}</span>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => toggleChildRemoval(child.id)}
+                        disabled={saving}
+                        className={`absolute top-0.5 right-0.5 w-5 h-5 text-white rounded-full text-xs flex items-center justify-center transition-opacity disabled:opacity-50 ${
+                          isMarked
+                            ? "bg-yellow-600 hover:bg-yellow-500 opacity-100"
+                            : "bg-black/70 hover:bg-red-600 opacity-0 group-hover:opacity-100"
+                        }`}
+                        title={isMarked ? "Undo remove" : "Remove attachment"}
+                      >
+                        {isMarked ? "\u21A9" : "\u00D7"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* New attachments preview */}
+          {editAttachments.length > 0 && (
+            <div>
+              {existingChildren.length === 0 && (
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Attachments</h3>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {editAttachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="relative group bg-gray-800 border border-gray-700 rounded-md overflow-hidden"
+                  >
+                    {att.previewUrl ? (
+                      <img
+                        src={att.previewUrl}
+                        alt={att.file.name}
+                        className="w-20 h-20 object-cover"
+                      />
+                    ) : (
+                      <div className="w-20 h-20 flex flex-col items-center justify-center p-1">
+                        <svg className="w-6 h-6 text-gray-500 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                        </svg>
+                        <span className="text-[9px] text-gray-400 truncate w-full text-center">{att.file.name}</span>
+                        <span className="text-[8px] text-gray-500">{formatFileSize(att.file.size)}</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveEditAttachment(att.id)}
+                      disabled={saving}
+                      className="absolute top-0.5 right-0.5 w-5 h-5 bg-black/70 hover:bg-red-600 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Tags */}
+          <TagInput
+            selectedTags={editTags}
+            onAdd={handleEditTagAdd}
+            onRemove={handleEditTagRemove}
+            onCreateAndAdd={handleEditCreateAndAddTag}
+            disabled={saving}
+          />
+
+          {/* Location */}
+          <div>
+            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Location</h3>
+            {memory.latitude != null && memory.longitude != null ? (
+              <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
+                <p className="text-sm text-gray-300">
+                  {decryptedPlaceName || `${memory.latitude.toFixed(4)}, ${memory.longitude.toFixed(4)}`}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowLocationPicker(true)}
+                  disabled={saving}
+                  className="text-xs text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-50 mt-1"
+                >
+                  Edit location
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowLocationPicker(true)}
+                disabled={saving}
+                className="text-sm text-gray-400 hover:text-gray-200 flex items-center gap-1 transition-colors disabled:opacity-50"
+              >
+                + Add Location
+              </button>
+            )}
+          </div>
+
+          {/* Hidden file input */}
+          <input
+            ref={editFileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files) handleEditFilesSelected(e.target.files);
+              e.target.value = "";
+            }}
+          />
+
           {error && <p className="text-red-400 text-sm">{error}</p>}
-          <div className="flex gap-3">
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-6 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium rounded-md transition-colors"
-            >
-              {saving ? "Encrypting & saving..." : "Save"}
-            </button>
+          {uploadProgress && <p className="text-blue-400 text-sm">{uploadProgress}</p>}
+
+          <div className="flex items-center justify-between">
             <button
               type="button"
-              onClick={cancelEditing}
-              className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-md transition-colors"
+              onClick={() => editFileInputRef.current?.click()}
+              disabled={saving}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 disabled:opacity-50 transition-colors"
+              title="Attach files"
             >
-              Cancel
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
+              </svg>
+              Attach
             </button>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={cancelEditing}
+                disabled={saving}
+                className="px-6 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-md transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-medium rounded-md transition-colors"
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
           </div>
         </form>
+
+        {showLocationPicker && (
+          <ChunkErrorBoundary fallbackMessage="Failed to load location picker. Please reload the page.">
+            <Suspense fallback={null}>
+              <LocationPickerModal
+                open={showLocationPicker}
+                initialLat={memory.latitude}
+                initialLng={memory.longitude}
+                onSave={handleLocationSave}
+                onCancel={() => setShowLocationPicker(false)}
+                saving={savingLocation}
+              />
+            </Suspense>
+          </ChunkErrorBoundary>
+        )}
       </div>
     );
   }
 
-  const photoChildren = memory.children?.filter((c) => c.content_type === "photo") ?? [];
+  const allChildren = memory.children ?? [];
+  const photoChildren = allChildren.filter((c) => c.content_type === "photo");
+  const nonPhotoChildren = allChildren.filter((c) => c.content_type !== "photo");
   const hasPhotoChildren = photoChildren.length > 0;
+
+  const dropOverlay = draggingOver && (
+    <div className="absolute inset-0 z-20 rounded-lg border-2 border-dashed border-blue-500 bg-blue-500/10 flex items-center justify-center pointer-events-none">
+      <div className="bg-gray-900/90 rounded-lg px-6 py-4 text-center">
+        <svg className="w-8 h-8 text-blue-400 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z" />
+        </svg>
+        <p className="text-blue-400 font-medium text-sm">Drop to attach</p>
+      </div>
+    </div>
+  );
+
+  const dropProgressBar = (dropUploading || dropProgress) && (
+    <div className="mt-3 flex items-center gap-2 text-sm text-blue-400">
+      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+      {dropProgress}
+    </div>
+  );
 
   // Shared content panel (used in both single-column and two-panel layouts)
   const contentPanel = (
@@ -721,7 +1248,75 @@ export default function MemoryDetail() {
         {displayContent}
       </div>
 
-      {/* Location display (when memory has coordinates) */}
+      {/* Non-photo children (documents, audio, etc.) */}
+      {nonPhotoChildren.length > 0 && (
+        <div className="mt-6">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">
+            Attachments ({nonPhotoChildren.length})
+          </h2>
+          <div className="space-y-2">
+            {nonPhotoChildren.map((child) => (
+              <Link
+                key={child.id}
+                to={`/memory/${child.id}`}
+                className="flex items-center gap-3 bg-gray-800 border border-gray-700 rounded-lg p-3 hover:bg-gray-750 hover:border-gray-600 transition-colors"
+              >
+                <svg className="w-5 h-5 text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+                <span className="text-sm text-gray-300">{child.content_type}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* EXIF / photo metadata */}
+      {memory.metadata_json && (() => {
+        try {
+          const exif = JSON.parse(memory.metadata_json);
+          const hasCamera = exif.camera_make || exif.camera_model;
+          const hasSettings = exif.iso || exif.aperture || exif.shutter_speed || exif.focal_length;
+          const hasDimensions = exif.width && exif.height;
+          if (!hasCamera && !hasSettings && !exif.date_taken && !exif.altitude && !hasDimensions) return null;
+          return (
+            <div className="mt-6">
+              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Photo Info</h2>
+              <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm space-y-1.5">
+                {hasCamera && (
+                  <p className="text-gray-300">
+                    {[exif.camera_make, exif.camera_model].filter(Boolean).join(" ")}
+                  </p>
+                )}
+                {hasSettings && (
+                  <p className="text-gray-400">
+                    {[
+                      exif.focal_length != null ? `${exif.focal_length}mm` : null,
+                      exif.aperture != null ? `f/${exif.aperture}` : null,
+                      exif.shutter_speed ? `${exif.shutter_speed}s` : null,
+                      exif.iso != null ? `ISO ${exif.iso}` : null,
+                    ].filter(Boolean).join("  \u00B7  ")}
+                  </p>
+                )}
+                {exif.date_taken && (
+                  <p className="text-gray-400 text-xs">Taken: {exif.date_taken}</p>
+                )}
+                {hasDimensions && (
+                  <p className="text-gray-500 text-xs">{exif.width} \u00D7 {exif.height}</p>
+                )}
+                {exif.altitude != null && (
+                  <p className="text-gray-500 text-xs">Altitude: {exif.altitude}m</p>
+                )}
+                {memory.latitude == null && memory.longitude == null && (
+                  <p className="text-gray-600 text-xs mt-2 italic">No GPS location embedded in this photo</p>
+                )}
+              </div>
+            </div>
+          );
+        } catch { return null; }
+      })()}
+
+      {/* Location display (read-only in view mode) */}
       {memory.latitude != null && memory.longitude != null && (
         <div className="mt-6">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Location</h2>
@@ -731,37 +1326,30 @@ export default function MemoryDetail() {
           {decryptedPlaceName && (
             <p className="text-sm text-gray-400 mt-1">{decryptedPlaceName}</p>
           )}
-          <button
-            onClick={() => setShowLocationPicker(true)}
-            className="text-xs text-gray-500 hover:text-gray-300 mt-1 transition-colors"
-          >
-            Edit location
-          </button>
         </div>
       )}
 
-      {/* Add Location button (when memory lacks both coordinates) */}
-      {(memory.latitude == null || memory.longitude == null) && (
+      {/* Tags (read-only in view mode) */}
+      {(memoryTags.length > 0 || tagsLoadError) && (
         <div className="mt-6">
-          <button
-            onClick={() => setShowLocationPicker(true)}
-            className="text-sm text-gray-400 hover:text-gray-200 flex items-center gap-1 transition-colors"
-          >
-            + Add Location
-          </button>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Tags</h2>
+          {tagsLoadError ? (
+            <p className="text-gray-600 text-xs">Failed to load tags</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {memoryTags.map((t) => (
+                <span
+                  key={t.tag_id}
+                  className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-300 border border-gray-700"
+                  style={t.tag_color ? { borderColor: t.tag_color, color: t.tag_color } : undefined}
+                >
+                  {t.tag_name}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
-
-      {/* Tags */}
-      <div className="mt-6">
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Tags</h2>
-        <TagInput
-          selectedTags={memoryTags}
-          onAdd={handleTagAdd}
-          onRemove={handleTagRemove}
-          onCreateAndAdd={handleCreateAndAddTag}
-        />
-      </div>
 
       {/* Connections */}
       {connectionsLoading ? (
@@ -807,6 +1395,7 @@ export default function MemoryDetail() {
         </div>
       ) : null}
 
+      {dropProgressBar}
       {error && <p className="text-red-400 text-sm mt-3">{error}</p>}
     </>
   );
@@ -814,7 +1403,8 @@ export default function MemoryDetail() {
   // Two-panel layout for memories with photo children
   if (hasPhotoChildren) {
     return (
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-6xl mx-auto relative" {...dragProps}>
+        {dropOverlay}
         <Link
           to="/timeline"
           className="text-blue-400 hover:text-blue-300 text-sm underline"
@@ -825,7 +1415,15 @@ export default function MemoryDetail() {
         <div className="mt-4 flex flex-col lg:flex-row gap-6">
           {/* Left panel — Photo carousel (60%) */}
           <div className="lg:w-[60%]">
-            <ChildPhotoCarousel children={photoChildren} />
+            <ChildPhotoCarousel
+              children={photoChildren}
+              onDelete={async (childId) => {
+                await deleteMemory(childId);
+                if (id) {
+                  try { await loadMemory(id); } catch { /* reload best-effort */ }
+                }
+              }}
+            />
           </div>
 
           {/* Right panel — Content (40%) */}
@@ -834,28 +1432,14 @@ export default function MemoryDetail() {
           </div>
         </div>
 
-        {showLocationPicker && (
-          <ChunkErrorBoundary fallbackMessage="Failed to load location picker. Please reload the page.">
-            <Suspense fallback={null}>
-              <LocationPickerModal
-                open={showLocationPicker}
-                initialLat={memory.latitude}
-                initialLng={memory.longitude}
-                onSave={handleLocationSave}
-                onCancel={() => setShowLocationPicker(false)}
-                saving={savingLocation}
-              />
-            </Suspense>
-          </ChunkErrorBoundary>
-        )}
-
       </div>
     );
   }
 
   // Single-column layout for memories without photo children
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="max-w-2xl mx-auto relative" {...dragProps}>
+      {dropOverlay}
       <Link
         to="/timeline"
         className="text-blue-400 hover:text-blue-300 text-sm underline"
@@ -1003,21 +1587,6 @@ export default function MemoryDetail() {
 
         {contentPanel}
       </div>
-
-      {showLocationPicker && (
-        <ChunkErrorBoundary fallbackMessage="Failed to load location picker. Please reload the page.">
-          <Suspense fallback={null}>
-            <LocationPickerModal
-              open={showLocationPicker}
-              initialLat={memory.latitude}
-              initialLng={memory.longitude}
-              onSave={handleLocationSave}
-              onCancel={() => setShowLocationPicker(false)}
-              saving={savingLocation}
-            />
-          </Suspense>
-        </ChunkErrorBoundary>
-      )}
 
     </div>
   );

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent } from "react";
+import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent, type DragEvent as ReactDragEvent } from "react";
 import { Link } from "react-router-dom";
 import { createMemory, createTag, addTagsToMemory, uploadFileWithProgress } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
@@ -29,7 +29,10 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { encrypt } = useEncryption();
+  const [draggingOver, setDraggingOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const parentIdRef = useRef<string | undefined>(undefined);
+  const dragCounterRef = useRef(0);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
 
@@ -120,7 +123,7 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
     e?.preventDefault();
     if (submitting) return;
 
-    const hasText = title.trim() && content.trim();
+    const hasText = title.trim() || content.trim();
     const hasFiles = attachments.length > 0;
 
     if (!hasText && !hasFiles) {
@@ -132,12 +135,15 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
     setError(null);
 
     try {
-      // 1. Create text memory if provided
+      // 1. Create text memory if provided (auto-generate title from content if needed)
       if (hasText) {
+        const finalTitle = title.trim() || content.trim().split("\n")[0]!.slice(0, 80);
+        const finalContent = content.trim() || title.trim();
+
         setUploadProgress("Encrypting text...");
         const encoder = new TextEncoder();
-        const titleEnvelope = await encrypt(encoder.encode(title.trim()));
-        const contentEnvelope = await encrypt(encoder.encode(content.trim()));
+        const titleEnvelope = await encrypt(encoder.encode(finalTitle));
+        const contentEnvelope = await encrypt(encoder.encode(finalContent));
 
         const created = await createMemory({
           title: bufferToHex(titleEnvelope.ciphertext),
@@ -147,6 +153,8 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
           encryption_algo: titleEnvelope.algo,
           encryption_version: titleEnvelope.version,
         });
+        // Persist parent ID in ref so retries can still link remaining files
+        parentIdRef.current = created.id;
         if (selectedTags.length > 0) {
           await addTagsToMemory(created.id, selectedTags.map((t) => t.tag_id));
         }
@@ -156,7 +164,8 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
         setSelectedTags([]);
       }
 
-      // 2. Upload each attached file as a separate memory
+      // 2. Upload each attached file, linked to parent text memory if one exists
+      // parentIdRef persists across retries even after text state is cleared.
       // Process sequentially; remove each from state after success so
       // a partial failure won't re-upload already-succeeded files on retry.
       const remaining = [...attachments];
@@ -165,7 +174,7 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
         const total = attachments.length;
         const idx = total - remaining.length + 1;
         setUploadProgress(`Uploading ${att.file.name} (${idx}/${total})...`);
-        const result = await uploadFileWithProgress(att.file);
+        const result = await uploadFileWithProgress(att.file, undefined, undefined, parentIdRef.current);
         if (selectedTags.length > 0) {
           await addTagsToMemory(result.memory_id, selectedTags.map((t) => t.tag_id));
         }
@@ -175,6 +184,7 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
       }
 
       // Reset and collapse
+      parentIdRef.current = undefined;
       setSelectedTags([]);
       setAttachments([]);
       setUploadProgress(null);
@@ -192,6 +202,7 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
     for (const att of attachments) {
       if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
     }
+    parentIdRef.current = undefined;
     setTitle("");
     setContent("");
     setSelectedTags([]);
@@ -201,6 +212,51 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
     setExpanded(false);
   }
 
+  function handleDragEnter(e: ReactDragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes("Files")) {
+      setDraggingOver(true);
+    }
+  }
+
+  function handleDragLeave(e: ReactDragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setDraggingOver(false);
+    }
+  }
+
+  function handleDragOver(e: ReactDragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function handleFileDrop(e: ReactDragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setDraggingOver(false);
+
+    if (submitting) return;
+
+    const files = e.dataTransfer.files;
+    if (files.length === 0) return;
+
+    if (!expanded) setExpanded(true);
+    handleFilesSelected(files);
+  }
+
+  const dragProps = {
+    onDragEnter: handleDragEnter,
+    onDragLeave: handleDragLeave,
+    onDragOver: handleDragOver,
+    onDrop: handleFileDrop,
+  };
+
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !submitting) {
       void handleSubmit();
@@ -209,7 +265,12 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
 
   if (!expanded) {
     return (
-      <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
+      <div className={`relative bg-gray-900 border rounded-lg p-4 mb-6 ${draggingOver ? "border-blue-500 bg-blue-500/5" : "border-gray-800"}`} {...dragProps}>
+        {draggingOver && (
+          <div className="absolute inset-0 z-10 rounded-lg border-2 border-dashed border-blue-500 bg-blue-500/10 flex items-center justify-center pointer-events-none">
+            <p className="text-blue-400 font-medium text-sm">Drop files to attach</p>
+          </div>
+        )}
         <button
           onClick={() => setExpanded(true)}
           className="w-full text-left px-4 py-2.5 bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-full text-gray-500 hover:text-gray-400 transition-colors"
@@ -260,7 +321,12 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
   }
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
+    <div className={`relative bg-gray-900 border rounded-lg p-4 mb-6 ${draggingOver ? "border-blue-500 bg-blue-500/5" : "border-gray-800"}`} {...dragProps}>
+      {draggingOver && (
+        <div className="absolute inset-0 z-10 rounded-lg border-2 border-dashed border-blue-500 bg-blue-500/10 flex items-center justify-center pointer-events-none">
+          <p className="text-blue-400 font-medium text-sm">Drop files to attach</p>
+        </div>
+      )}
       <form onSubmit={handleSubmit} className="space-y-3">
         <input
           type="text"

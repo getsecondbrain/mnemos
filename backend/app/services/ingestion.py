@@ -64,6 +64,9 @@ class IngestionResult:
     latitude: float | None = None
     longitude: float | None = None
 
+    # Additional EXIF metadata (photos only)
+    exif_metadata: dict | None = None
+
 
 # ---------------------------------------------------------------------------
 # Service
@@ -111,11 +114,13 @@ class IngestionService:
         # 1. Detect content type
         mime_type, content_type = self._detect_content_type(file_data, filename)
 
-        # Extract GPS coordinates from EXIF (photos only)
+        # Extract GPS coordinates and additional metadata from EXIF (photos only)
         latitude: float | None = None
         longitude: float | None = None
+        exif_metadata: dict | None = None
         if content_type == "photo":
             latitude, longitude = self._extract_gps_from_exif(file_data)
+            exif_metadata = self._extract_exif_metadata(file_data)
 
         # 2. Preserve to archival format
         try:
@@ -169,6 +174,7 @@ class IngestionService:
             text_extract_envelope=text_extract_envelope,
             latitude=latitude,
             longitude=longitude,
+            exif_metadata=exif_metadata,
         )
 
     async def ingest_text(
@@ -296,6 +302,7 @@ class IngestionService:
                 # GPS info is stored in a sub-IFD accessed via tag 0x8825 (ExifTags.GPSInfo)
                 gps_ifd = exif.get_ifd(ExifTags.GPSInfo)
                 if not gps_ifd:
+                    logger.debug("No GPS IFD found in EXIF data (photo has no embedded location)")
                     return (None, None)
 
                 # Required tags: GPSLatitude (2), GPSLatitudeRef (1),
@@ -311,6 +318,10 @@ class IngestionService:
                     or lon_data is None
                     or lon_ref is None
                 ):
+                    logger.debug(
+                        "GPS IFD present but missing required tags: lat=%s ref=%s lon=%s ref=%s",
+                        lat_data is not None, lat_ref, lon_data is not None, lon_ref,
+                    )
                     return (None, None)
 
                 def _dms_to_decimal(dms: tuple, ref: str) -> float:
@@ -337,6 +348,112 @@ class IngestionService:
         except Exception:
             logger.debug("Failed to extract GPS from EXIF", exc_info=True)
             return (None, None)
+
+    @staticmethod
+    def _extract_exif_metadata(file_data: bytes) -> dict | None:
+        """Extract useful EXIF metadata from an image file.
+
+        Returns a dict with available fields, or None if no EXIF data found.
+        Fields: camera_make, camera_model, date_taken, width, height,
+        iso, aperture, shutter_speed, focal_length, altitude.
+
+        Pillow stores some EXIF tags at the top-level IFD0 and others in
+        the ExifIFD sub-IFD (0x8769).  We check both locations for each
+        shooting-parameter tag so that images written by different tools
+        are handled correctly.
+        """
+        try:
+            with Image.open(io.BytesIO(file_data)) as img:
+                width, height = img.size
+                exif = img.getexif()
+
+                meta: dict = {"width": width, "height": height}
+
+                if not exif:
+                    return meta
+
+                # Helper: look up a tag in ExifIFD first, then top-level
+                exif_ifd = exif.get_ifd(0x8769)  # ExifIFD sub-IFD
+
+                def _get(tag_id: int):  # noqa: ANN202
+                    """Return the value from ExifIFD or top-level EXIF."""
+                    if exif_ifd:
+                        val = exif_ifd.get(tag_id)
+                        if val is not None:
+                            return val
+                    return exif.get(tag_id)
+
+                # Camera make/model (IFD0 tags)
+                make = exif.get(ExifTags.Make)
+                if make and isinstance(make, str):
+                    meta["camera_make"] = make.strip()
+                model = exif.get(ExifTags.Model)
+                if model and isinstance(model, str):
+                    meta["camera_model"] = model.strip()
+
+                # DateTimeOriginal (0x9003)
+                dto = _get(0x9003)
+                if dto and isinstance(dto, str):
+                    meta["date_taken"] = dto
+
+                # ISO (0x8827 ISOSpeedRatings)
+                iso = _get(0x8827)
+                if iso is not None:
+                    try:
+                        meta["iso"] = int(iso) if not isinstance(iso, tuple) else int(iso[0])
+                    except (TypeError, ValueError, IndexError):
+                        pass
+
+                # Aperture / FNumber (0x829D)
+                fnumber = _get(0x829D)
+                if fnumber is not None:
+                    try:
+                        meta["aperture"] = float(fnumber)
+                    except (TypeError, ValueError):
+                        pass
+
+                # Shutter speed / ExposureTime (0x829A)
+                exposure = _get(0x829A)
+                if exposure is not None:
+                    try:
+                        exp_float = float(exposure)
+                        if exp_float > 0:
+                            if exp_float < 1:
+                                meta["shutter_speed"] = f"1/{int(round(1.0 / exp_float))}"
+                            else:
+                                meta["shutter_speed"] = f"{exp_float:.1f}"
+                    except (TypeError, ValueError):
+                        pass
+
+                # Focal length (0x920A)
+                focal = _get(0x920A)
+                if focal is not None:
+                    try:
+                        meta["focal_length"] = float(focal)
+                    except (TypeError, ValueError):
+                        pass
+
+                # GPS altitude (isolated try so a bad value doesn't lose other fields)
+                try:
+                    gps_ifd = exif.get_ifd(ExifTags.GPSInfo)
+                    if gps_ifd:
+                        alt = gps_ifd.get(GPSTags.GPSAltitude)
+                        if alt is not None:
+                            altitude = float(alt)
+                            alt_ref = gps_ifd.get(GPSTags.GPSAltitudeRef)
+                            if alt_ref is not None:
+                                # GPSAltitudeRef can be int, bytes, or str
+                                ref_val = int.from_bytes(alt_ref, "big") if isinstance(alt_ref, bytes) else int(alt_ref)
+                                if ref_val == 1:
+                                    altitude = -altitude  # Below sea level
+                            meta["altitude"] = round(altitude, 1)
+                except Exception:
+                    logger.debug("Failed to parse GPS altitude from EXIF", exc_info=True)
+
+                return meta
+        except Exception:
+            logger.debug("Failed to extract EXIF metadata", exc_info=True)
+            return None
 
     # -- internal helpers ----------------------------------------------------
 

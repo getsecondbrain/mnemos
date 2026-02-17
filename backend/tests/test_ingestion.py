@@ -797,6 +797,127 @@ class TestExifGpsExtraction:
         assert result.longitude is None
 
 
+class TestExifMetadataExtraction:
+    """EXIF metadata extraction (camera, settings, dimensions, altitude)."""
+
+    def test_extract_metadata_with_camera_and_settings(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Extract camera make/model and shooting settings from EXIF."""
+        from PIL.ExifTags import Base as ExifTags
+
+        img = Image.new("RGB", (640, 480), color=(0, 128, 255))
+        exif = img.getexif()
+        exif[ExifTags.Make] = "TestCam"
+        exif[ExifTags.Model] = "X100"
+        # Write shooting params at top-level (some tools do this)
+        exif[0x8827] = 200          # ISO
+        exif[0x829D] = 2.8          # FNumber
+        exif[0x829A] = 0.008        # ExposureTime (1/125)
+        exif[0x920A] = 35.0         # FocalLength
+        exif[0x9003] = "2025:07:04 14:30:00"  # DateTimeOriginal
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif.tobytes())
+        jpeg_data = buf.getvalue()
+
+        meta = ingestion_service._extract_exif_metadata(jpeg_data)
+        assert meta is not None
+        assert meta["width"] == 640
+        assert meta["height"] == 480
+        assert meta["camera_make"] == "TestCam"
+        assert meta["camera_model"] == "X100"
+        assert meta["iso"] == 200
+        assert meta["aperture"] == 2.8
+        assert meta["shutter_speed"] == "1/125"
+        assert meta["focal_length"] == 35.0
+        assert meta["date_taken"] == "2025:07:04 14:30:00"
+
+    def test_extract_metadata_dimensions_only(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Returns dimensions even when no other EXIF data exists."""
+        png_data = _make_png_bytes(32, 24)
+        meta = ingestion_service._extract_exif_metadata(png_data)
+        assert meta is not None
+        assert meta["width"] == 32
+        assert meta["height"] == 24
+        assert "camera_make" not in meta
+
+    def test_extract_metadata_with_gps_altitude(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Extract GPS altitude from EXIF."""
+        from PIL.ExifTags import Base as ExifTags, GPS as GPSTags
+
+        img = Image.new("RGB", (16, 16), color=(0, 0, 0))
+        exif = img.getexif()
+        gps_ifd = {
+            GPSTags.GPSAltitude: 1500.5,
+            GPSTags.GPSAltitudeRef: 0,  # Above sea level
+        }
+        exif[ExifTags.GPSInfo] = gps_ifd
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif.tobytes())
+        jpeg_data = buf.getvalue()
+
+        meta = ingestion_service._extract_exif_metadata(jpeg_data)
+        assert meta is not None
+        assert meta["altitude"] == 1500.5
+
+    def test_extract_metadata_altitude_bytes_ref(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """GPSAltitudeRef as bytes (b'\\x01') means below sea level."""
+        from PIL.ExifTags import Base as ExifTags, GPS as GPSTags
+
+        img = Image.new("RGB", (16, 16), color=(0, 0, 0))
+        exif = img.getexif()
+        gps_ifd = {
+            GPSTags.GPSAltitude: 50.0,
+            GPSTags.GPSAltitudeRef: b"\x01",  # Below sea level
+        }
+        exif[ExifTags.GPSInfo] = gps_ifd
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif.tobytes())
+        jpeg_data = buf.getvalue()
+
+        meta = ingestion_service._extract_exif_metadata(jpeg_data)
+        assert meta is not None
+        assert meta["altitude"] == -50.0
+
+    def test_extract_metadata_non_image_returns_none(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Non-image data returns None."""
+        meta = ingestion_service._extract_exif_metadata(b"not an image")
+        assert meta is None
+
+    @pytest.mark.asyncio
+    async def test_ingest_photo_populates_exif_metadata(
+        self, ingestion_service: IngestionService
+    ) -> None:
+        """Ingesting a photo with EXIF populates exif_metadata on result."""
+        from PIL.ExifTags import Base as ExifTags
+
+        img = Image.new("RGB", (100, 80), color=(0, 0, 0))
+        exif = img.getexif()
+        exif[ExifTags.Make] = "Nikon"
+        exif[ExifTags.Model] = "D850"
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", exif=exif.tobytes())
+        jpeg_data = buf.getvalue()
+
+        with patch("app.services.ingestion.detect_mime_type", return_value="image/jpeg"):
+            result = await ingestion_service.ingest_file(jpeg_data, "nikon.jpg")
+
+        assert result.exif_metadata is not None
+        assert result.exif_metadata["camera_make"] == "Nikon"
+        assert result.exif_metadata["camera_model"] == "D850"
+        assert result.exif_metadata["width"] == 100
+        assert result.exif_metadata["height"] == 80
+
+
 # ---------------------------------------------------------------------------
 # Location field validation tests
 # ---------------------------------------------------------------------------
