@@ -7,14 +7,18 @@ server streams tokens back in real-time with source memory IDs.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlmodel import Session
 
 from app import auth_state
 from app.db import get_session
+from app.models.conversation import Conversation
 from app.routers.auth import _decode_token
 from app.services.embedding import EmbeddingError, EmbeddingService
 from app.services.encryption import EncryptionService
@@ -70,20 +74,132 @@ async def _authenticate(websocket: WebSocket) -> str:
     return session_id
 
 
+def _clean_title(raw: str) -> str:
+    """Strip quotes, trailing punctuation, and validate 2-80 char length."""
+    title = raw.strip()
+    # Strip surrounding quotes (single, double, backtick)
+    title = re.sub(r'^[\"\'\`]+|[\"\'\`]+$', '', title).strip()
+    # Remove trailing sentence punctuation
+    title = title.rstrip('.,;:!?')
+    # Collapse whitespace
+    title = re.sub(r'\s+', ' ', title).strip()
+    # Validate length
+    if len(title) < 2:
+        return "New conversation"
+    if len(title) > 80:
+        return title[:77] + "..."
+    return title
+
+
 async def _handle_question(
     websocket: WebSocket,
     rag_service: RAGService,
     text: str,
     top_k: int,
-) -> None:
-    """Run RAG stream_query and send tokens + sources + done to the client."""
+) -> str:
+    """Run RAG stream_query and send tokens + sources + done to the client.
+
+    Returns the full accumulated assistant response text.
+    """
     token_stream, source_ids = await rag_service.stream_query(text, top_k=top_k)
 
+    chunks: list[str] = []
     async for token in token_stream:
         await websocket.send_json({"type": "token", "text": token})
+        chunks.append(token)
 
     await websocket.send_json({"type": "sources", "memory_ids": source_ids})
     await websocket.send_json({"type": "done"})
+
+    return "".join(chunks)
+
+
+def _persist_exchange(
+    db_session: Session,
+    conversation: Conversation,
+    user_text: str,
+    assistant_text: str,
+) -> tuple[Conversation, bool]:
+    """Save exchange to conversation and return (conversation, needs_ai_title).
+
+    Returns needs_ai_title=True when the conversation title is still the
+    default "New conversation" — indicating the first exchange just completed
+    and a title should be generated.
+    """
+    needs_ai_title = conversation.title == "New conversation"
+    conversation.updated_at = datetime.now(timezone.utc)
+    db_session.add(conversation)
+    db_session.commit()
+    db_session.refresh(conversation)
+    return conversation, needs_ai_title
+
+
+async def _generate_title(
+    websocket: WebSocket,
+    llm_service: LLMService,
+    conversation_id: str,
+    user_text: str,
+    assistant_text: str,
+) -> None:
+    """Generate a conversation title from the first exchange via LLM.
+
+    Runs as a fire-and-forget asyncio.create_task. Creates its own DB
+    session to avoid sharing the WebSocket handler's session across
+    concurrent coroutines.
+    """
+    # Truncate inputs to keep the prompt short
+    user_snippet = user_text[:200]
+    assistant_snippet = assistant_text[:300]
+
+    prompt = (
+        f"Generate a short, descriptive title (2-6 words) for this conversation.\n\n"
+        f"User: {user_snippet}\n"
+        f"Assistant: {assistant_snippet}"
+    )
+    system = (
+        "You generate short conversation titles. "
+        "Output ONLY the title text — no quotes, no extra punctuation, no explanation."
+    )
+
+    try:
+        response = await llm_service.generate(
+            prompt=prompt,
+            system=system,
+            temperature=0.3,
+        )
+        title = _clean_title(response.text)
+
+        # If cleaning returned the default, skip the update
+        if title == "New conversation":
+            return
+
+        # Update DB in a fresh session (safe for background task)
+        from app.db import engine
+        with Session(engine) as session:
+            conv = session.get(Conversation, conversation_id)
+            if conv is not None:
+                conv.title = title
+                conv.updated_at = datetime.now(timezone.utc)
+                session.add(conv)
+                session.commit()
+
+        # Send title update to client via WebSocket
+        await websocket.send_json({
+            "type": "title_update",
+            "conversation_id": conversation_id,
+            "title": title,
+        })
+    except WebSocketDisconnect:
+        logger.debug(
+            "Client disconnected before title_update could be sent (conv=%s)",
+            conversation_id,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to generate title for conversation %s",
+            conversation_id,
+            exc_info=True,
+        )
 
 
 @router.websocket("/ws/chat")
@@ -146,6 +262,14 @@ async def chat_websocket(
         family_context=family_context,
     )
 
+    # --- Create conversation record ---
+    conversation = Conversation()
+    db_session.add(conversation)
+    db_session.commit()
+    db_session.refresh(conversation)
+
+    title_task_fired = False  # Guard to prevent duplicate title generation tasks
+
     # --- Message loop ---
     try:
         while True:
@@ -170,7 +294,27 @@ async def chat_websocket(
             top_k = max(1, min(20, int(top_k)))
 
             try:
-                await _handle_question(websocket, rag_service, text, top_k)
+                assistant_text = await _handle_question(
+                    websocket, rag_service, text, top_k
+                )
+
+                # Persist exchange and check if title generation is needed
+                conversation, needs_ai_title = _persist_exchange(
+                    db_session, conversation, text, assistant_text
+                )
+
+                # Fire title generation for first exchange
+                if needs_ai_title and not title_task_fired:
+                    title_task_fired = True
+                    asyncio.create_task(
+                        _generate_title(
+                            websocket,
+                            llm_service,
+                            conversation.id,
+                            text,
+                            assistant_text,
+                        )
+                    )
             except (LLMError, EmbeddingError) as exc:
                 logger.warning("Service error during chat: %s", exc)
                 await websocket.send_json(
