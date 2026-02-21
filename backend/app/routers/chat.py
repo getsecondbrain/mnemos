@@ -19,6 +19,7 @@ from app.routers.auth import _decode_token
 from app.services.embedding import EmbeddingError, EmbeddingService
 from app.services.encryption import EncryptionService
 from app.services.llm import LLMError, LLMService
+from app.services.owner_context import get_owner_context
 from app.services.rag import RAGService
 
 logger = logging.getLogger(__name__)
@@ -134,11 +135,15 @@ async def chat_websocket(
         await websocket.close(code=4003)
         return
 
+    owner_name, family_context = get_owner_context(db_session)
+
     rag_service = RAGService(
         embedding_service=embedding_service,
         llm_service=llm_service,
         encryption_service=encryption_service,
         db_session=db_session,
+        owner_name=owner_name,
+        family_context=family_context,
     )
 
     # --- Message loop ---

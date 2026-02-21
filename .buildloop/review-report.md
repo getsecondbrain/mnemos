@@ -1,12 +1,12 @@
-# Review Report — A2.2
+# Review Report — A2.3
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (py_compile succeeded, module imports without error)
-- Tests: PASS (157 passed, 1 pre-existing failure in test_embedding.py unrelated to this task)
-- Lint: SKIPPED (ruff and flake8 not installed in host Python environment)
-- Docker: PASS (docker compose config validates without errors)
+- Build: PASS (py_compile succeeds for backend/app/routers/chat.py)
+- Tests: PASS (10/10 chat tests pass; 1 pre-existing failure in test_embedding.py::TestSearchSimilar::test_returns_scored_chunks confirmed on parent commit — unrelated to this change)
+- Lint: PASS (ruff check app/routers/chat.py — all checks passed)
+- Docker: PASS (docker compose config validates successfully; no compose files changed)
 
 ## Findings
 
@@ -16,23 +16,14 @@
   "medium": [],
   "low": [],
   "validated": [
-    "File backend/app/services/owner_context.py exists and matches plan specification exactly",
-    "Function signature matches spec: get_owner_context(db_session: Session) -> tuple[str, str]",
-    "Uses db_session.get(OwnerProfile, 1) for singleton lookup — matches owner router pattern at owner.py:22",
-    "Returns ('', '') when no OwnerProfile exists (verified via in-memory SQLite test)",
-    "Returns ('', '') when OwnerProfile.name is empty string (verified via test)",
-    "Returns (owner_name, '') when no family members exist (verified via test)",
-    "WHERE clause correctly excludes: relationship_to_owner IS NULL, relationship_to_owner = 'self' (verified via test with 'self' and NULL persons excluded)",
-    "ORDER BY relationship_to_owner, name matches owner.py:84-91 family endpoint (verified via test with Alice/Zoe children ordering)",
-    "Deceased suffix format correct: 'Bob (parent, deceased)' — comma-space-deceased inside parentheses (verified via test)",
-    "Separator is '; ' (semicolon-space) as specified in plan",
-    "Uses 'from __future__ import annotations' per project convention",
-    "No unnecessary imports — only Session, select, OwnerProfile, Person",
-    "No hardcoded values that should be configurable",
-    "No resource leaks — stateless function, no file handles or connections opened",
-    "No security concerns — read-only DB queries with no user-controlled input",
-    "SQLAlchemy IS NOT NULL comparison uses != None with noqa: E711 comment (correct pattern)",
-    "Pre-existing test failure (test_embedding.py::TestSearchSimilar::test_returns_scored_chunks) is unrelated to this task"
+    "Import `from app.services.owner_context import get_owner_context` added at line 22, correctly placed after other service imports",
+    "get_owner_context(db_session) called at line 138, after AI service availability check and before RAGService construction — correct ordering",
+    "owner_name and family_context passed as keyword args to RAGService constructor at lines 145-146",
+    "RAGService.__init__ accepts owner_name (str='') and family_context (str='') with defaults (rag.py:63-64), so all 5 other call sites (dependencies.py:130, testament.py:557, test_rag.py:70, test_search.py:122, test_search.py:1264) continue to work unchanged with empty-string defaults",
+    "get_owner_context is synchronous and db_session is available as a dependency param on chat_websocket (line 92) — no async wrapper needed, correct",
+    "get_owner_context returns ('', '') when no OwnerProfile exists (owner_context.py:17-19), matching RAGService default behavior — no crash risk in test or fresh DB scenarios",
+    "All 10 chat tests pass, confirming no regression from the 3-line change",
+    "Full test suite: 157 passed, 1 pre-existing failure (unrelated embedding mock issue)"
   ]
 }
 ```
