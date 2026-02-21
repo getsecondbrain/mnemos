@@ -49,6 +49,9 @@ async def create_person(
         name_encrypted=body.name_encrypted,
         name_dek=body.name_dek,
         immich_person_id=body.immich_person_id,
+        relationship_to_owner=body.relationship_to_owner,
+        is_deceased=body.is_deceased,
+        gedcom_id=body.gedcom_id,
     )
     session.add(person)
     session.commit()
@@ -199,6 +202,12 @@ async def update_person(
         person.name_encrypted = body.name_encrypted
     if body.name_dek is not None:
         person.name_dek = body.name_dek
+    if body.relationship_to_owner is not None:
+        person.relationship_to_owner = body.relationship_to_owner
+    if body.is_deceased is not None:
+        person.is_deceased = body.is_deceased
+    if body.gedcom_id is not None:
+        person.gedcom_id = body.gedcom_id
 
     person.updated_at = datetime.now(timezone.utc)
     session.add(person)
