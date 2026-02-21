@@ -1,12 +1,12 @@
-# Review Report — A6.2
+# Review Report — A6.3
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (py_compile succeeds)
-- Tests: PASS (27/27 passed, including all 3 new tests)
-- Lint: SKIPPED (ruff and flake8 not installed in this environment)
-- Docker: SKIPPED (no docker-compose changes in this task)
+- Build: PASS (py_compile succeeds, no syntax errors)
+- Tests: PASS (7/7 pass, 0 regressions when run alongside test_chat.py — 17/17 total)
+- Lint: SKIPPED (ruff and flake8 not installed in environment)
+- Docker: SKIPPED (no compose files changed)
 
 ## Findings
 
@@ -14,22 +14,24 @@
 {
   "high": [],
   "medium": [],
-  "low": [],
+  "low": [
+    {"file": "backend/tests/test_conversations.py", "line": 12, "issue": "Unused import: `from sqlmodel import Session` — Session is never referenced in the test file (the `session` fixture comes from conftest.py)", "category": "style"},
+    {"file": "backend/tests/test_conversations.py", "line": 15, "issue": "Unused import: `_clean_title` is imported but never called directly — it is only tested implicitly via `_generate_title`. The import in the comment on line 81 is not a usage.", "category": "style"}
+  ],
   "validated": [
-    "All 3 new tests (test_create_person_with_relationship, test_update_person_relationship, test_update_person_deceased) pass successfully",
-    "Tests correctly exercise the PersonCreate and PersonUpdate schemas with relationship_to_owner and is_deceased fields",
-    "test_create_person_with_relationship verifies POST /api/persons returns 201, echoes relationship_to_owner='parent', and defaults is_deceased=False",
-    "test_update_person_relationship verifies PUT /api/persons/{id} sets and then changes relationship_to_owner (friend→sibling), both return 200",
-    "test_update_person_deceased verifies PUT /api/persons/{id} sets is_deceased=True while preserving name='Test Person' unchanged",
-    "New tests are correctly placed in the '# --- Person CRUD ---' section after test_update_person_name, consistent with plan",
-    "Tests use existing fixtures (client, person_id) from conftest.py — no new fixtures or dependencies needed",
-    "No duplicate function definitions in test file (checked via grep)",
-    "All 24 pre-existing tests continue to pass — no regressions",
-    "Router at persons.py:207-210 correctly handles relationship_to_owner and is_deceased in update_person via model_dump(exclude_unset=True)",
-    "Router at persons.py:47-55 correctly passes relationship_to_owner and is_deceased from PersonCreate to Person constructor",
-    "Person model (person.py:49-50) has both fields with correct types and defaults (relationship_to_owner: str|None=None, is_deceased: bool=False)",
-    "PersonRead schema (person.py:85-86) includes both fields so they are returned in API responses",
-    "No imports added or modified — existing imports are sufficient for the new tests"
+    "All 5 required tests from the task description are present: test_persist_exchange_returns_needs_title, test_ai_title_generation, test_system_prompt_includes_date, test_system_prompt_includes_owner_name, test_system_prompt_without_owner",
+    "_persist_exchange tests correctly verify the (Conversation, bool) return tuple, checking both True (default title) and False (custom title) paths against chat.py:129",
+    "test_ai_title_generation correctly patches app.db.engine (not app.routers.chat.engine) for the lazy import at chat.py:177, uses StaticPool in-memory engine for cross-session DB verification",
+    "LLM mock returns quoted title '\"Travel Plans for Europe\"' and test correctly asserts _clean_title strips quotes to 'Travel Plans for Europe' in both WebSocket message and DB",
+    "test_ai_title_generation verifies temperature=0.3 kwarg matches chat.py:168",
+    "WebSocket send_json assertions correctly verify the {type, conversation_id, title} message shape matching chat.py:187-191",
+    "datetime mock in test_system_prompt_includes_date correctly patches app.services.rag.datetime (matching the module-level `from datetime import datetime` at rag.py:11) and asserts Saturday, February 21, 2026 format matching rag.py:75 strftime pattern",
+    "test_system_prompt_includes_owner_name assertions match rag.py:78 (owner_preamble), rag.py:79 (possessive), rag.py:85 (family_block)",
+    "test_system_prompt_without_owner assertions match rag.py:81 (fallback preamble), rag.py:82 (fallback possessive), rag.py:87 (empty family_block)",
+    "RAGService constructor in _make_rag_service passes db_session=None which is safe since _build_system_prompt does not access db_session",
+    "No duplicate function definitions found in the test file",
+    "No security issues — test file contains only test fixtures and assertions, no production code changes",
+    "session.expire_all() at line 115 correctly forces DB re-read after _generate_title's separate Session commits via the same StaticPool engine"
   ]
 }
 ```
