@@ -1,12 +1,12 @@
-# Review Report — A4.2
+# Review Report — A4.3
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (vite build succeeded, 18 chunks, no errors)
-- Tests: SKIPPED (no frontend test suite exists — no test files or test script in package.json)
-- Lint: PASS (0 errors, 30 warnings — all pre-existing, none in new code)
-- Docker: SKIPPED (no docker-compose changes in this task)
+- Build: PASS (tsc --noEmit clean, vite build succeeds, Settings.tsx code-split at 23.93 kB)
+- Tests: PASS (24/24 backend/tests/test_persons.py pass including update_person tests)
+- Lint: PASS (eslint reports no errors for Settings.tsx)
+- Docker: PASS (docker compose config validates without errors)
 
 ## Findings
 
@@ -14,24 +14,29 @@
 {
   "high": [],
   "medium": [],
-  "low": [],
+  "low": [
+    {"file": "frontend/src/components/Settings.tsx", "line": 294, "issue": "After successful GEDCOM import, setGedcomFile(null) clears state but the <input type='file'> DOM element still displays the old filename since file inputs cannot be controlled in React. The Import button is correctly disabled, but the displayed filename is misleading.", "category": "inconsistency"},
+    {"file": "frontend/src/components/Settings.tsx", "line": 214, "issue": "setTimeout(() => setOwnerSuccess(null), 3000) is not cleaned up on component unmount. In React 18+ this is harmless (no warning), but a useEffect cleanup or ref guard would be more correct.", "category": "style"},
+    {"file": "frontend/src/components/Settings.tsx", "line": 71, "issue": "ownerProfile state variable is stored via setOwnerProfile (lines 180, 212) but never read for rendering. The individual fields (ownerName/ownerDob/ownerBio) duplicate this data. Minor unnecessary state.", "category": "style"},
+    {"file": "frontend/src/components/Settings.tsx", "line": 419, "issue": "Relationship displayed as raw backend value (e.g. 'aunt_uncle' instead of 'Aunt/Uncle'). The RELATIONSHIP_OPTIONS lookup exists at line 38 but is not used for display formatting. Plan acknowledges this as intentional per task spec.", "category": "inconsistency"}
+  ],
   "validated": [
-    "TypeScript compilation passes with zero errors (npx tsc --noEmit)",
-    "ESLint produces 0 errors; all 30 warnings are pre-existing (none in lines 729-775 of api.ts)",
-    "Vite production build succeeds",
-    "Imports: OwnerProfile, OwnerProfileUpdate, GedcomImportResult added to import block (lines 27-29); Person was already imported (line 21)",
-    "getOwnerProfile() (line 731-733): GET /owner/profile via request<T>() — matches backend GET /api/owner/profile route and OwnerProfileRead schema",
-    "updateOwnerProfile(body) (lines 735-739): PUT /owner/profile with JSON.stringify(body) — matches backend PUT /api/owner/profile accepting OwnerProfileUpdate",
-    "getOwnerFamily() (lines 742-744): GET /owner/family via request<Person[]> — matches backend GET /api/owner/family returning list[PersonRead]",
-    "importGedcom(file, ownerGedcomId?) (lines 746-775): Uses raw fetch (not request<T>()) to avoid Content-Type: application/json conflict with FormData multipart — correct",
-    "importGedcom: FormData field name 'file' matches backend's UploadFile = File(...) parameter name",
-    "importGedcom: ownerGedcomId sent as query parameter matching backend's Query(None) declaration at owner.py:101",
-    "importGedcom: Content-Type header correctly omitted — fetch auto-sets multipart/form-data with boundary when given FormData body",
-    "importGedcom: Auth token injection via getAccessTokenFn?.() follows same pattern as fetchVaultFile (line 518), exportAllData (line 584)",
-    "importGedcom: Error handling pattern (.json().catch fallback, ApiError throw) matches existing raw-fetch functions",
-    "GedcomImportResult type fields (persons_created, persons_updated, persons_skipped, families_processed, root_person_id, errors) match backend's dataclass asdict() output at owner.py:135",
-    "Owner endpoints section placed after Person endpoints (line 728) and before Geocoding section (line 777), matching the plan's insertion point",
-    "All 4 new functions are properly exported (no missing export keyword — async functions at module level are auto-exported)"
+    "Owner Identity section is placed at TOP of settings page, immediately after <h1>Settings</h1> (line 313)",
+    "Profile form includes name, date_of_birth, and bio fields with Save button (lines 317-359)",
+    "Family members list displays '{name} ({relationship})' format with Edit/Remove buttons (lines 362-445)",
+    "Remove button clears relationship_to_owner via updatePerson(id, {relationship_to_owner: null}) — does NOT delete the Person record (line 246)",
+    "Backend persons.py update_person uses model_dump(exclude_unset=True) pattern (line 195) enabling explicit null for relationship_to_owner clearance",
+    "Inline Add Family Member form with name input, relationship dropdown (11 options, 'self' excluded), and deceased checkbox (lines 447-490)",
+    "GEDCOM file upload with Import button and result summary showing created/updated/skipped/families counts (lines 492-544)",
+    "Owner data loaded in existing useEffect Promise.all via getOwnerProfile() and getOwnerFamily() (lines 165-172)",
+    "All imports verified: getOwnerProfile, updateOwnerProfile, getOwnerFamily, importGedcom, createPerson, updatePerson exist in api.ts",
+    "All type imports verified: OwnerProfile, Person, GedcomImportResult, RelationshipToOwner exist in types/index.ts",
+    "PersonUpdate type correctly allows null for relationship_to_owner (types/index.ts line 322)",
+    "Inline edit mode for family members with name/relationship/deceased fields and Save/Cancel buttons (lines 371-411)",
+    "Error handling present on all async operations (owner save, add family, remove family, edit family, GEDCOM import)",
+    "Backend PersonRead schema fields match frontend Person type (id, name, relationship_to_owner, is_deceased, gedcom_id, etc.)",
+    "No XSS risks — all user content rendered as text nodes, no dangerouslySetInnerHTML usage",
+    "No security issues — all endpoints require auth via existing patterns"
   ]
 }
 ```

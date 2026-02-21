@@ -319,7 +319,7 @@ export interface PersonUpdate {
   name?: string;
   name_encrypted?: string;
   name_dek?: string;
-  relationship_to_owner?: RelationshipToOwner;
+  relationship_to_owner?: RelationshipToOwner | null;
   is_deceased?: boolean;
   gedcom_id?: string;
 }

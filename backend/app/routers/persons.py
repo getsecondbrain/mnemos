@@ -192,22 +192,24 @@ async def update_person(
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    if body.name is not None:
-        name = body.name.strip()
+    update_data = body.model_dump(exclude_unset=True)
+
+    if "name" in update_data:
+        name = (update_data["name"] or "").strip()
         if not name:
             raise HTTPException(status_code=422, detail="Person name cannot be empty")
         person.name = name
 
-    if body.name_encrypted is not None:
-        person.name_encrypted = body.name_encrypted
-    if body.name_dek is not None:
-        person.name_dek = body.name_dek
-    if body.relationship_to_owner is not None:
-        person.relationship_to_owner = body.relationship_to_owner
-    if body.is_deceased is not None:
-        person.is_deceased = body.is_deceased
-    if body.gedcom_id is not None:
-        person.gedcom_id = body.gedcom_id
+    if "name_encrypted" in update_data:
+        person.name_encrypted = update_data["name_encrypted"]
+    if "name_dek" in update_data:
+        person.name_dek = update_data["name_dek"]
+    if "relationship_to_owner" in update_data:
+        person.relationship_to_owner = update_data["relationship_to_owner"]
+    if "is_deceased" in update_data:
+        person.is_deceased = update_data["is_deceased"]
+    if "gedcom_id" in update_data:
+        person.gedcom_id = update_data["gedcom_id"]
 
     person.updated_at = datetime.now(timezone.utc)
     session.add(person)
