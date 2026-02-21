@@ -8,7 +8,8 @@ real encryption service for realistic encrypted chunk payloads.
 from __future__ import annotations
 
 import os
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -226,3 +227,56 @@ class TestStreamQuery:
         async for token in token_iter:
             tokens.append(token)
         assert "don't have any relevant memories" in "".join(tokens)
+
+
+# ── TestBuildSystemPrompt ────────────────────────────────────────────
+
+
+class TestBuildSystemPrompt:
+    """Tests for RAGService._build_system_prompt."""
+
+    def _make_rag_service(self, owner_name: str = "", family_context: str = "") -> RAGService:
+        """Create a RAGService with mock dependencies for prompt testing."""
+        return RAGService(
+            embedding_service=MagicMock(),
+            llm_service=MagicMock(),
+            encryption_service=MagicMock(),
+            db_session=None,
+            owner_name=owner_name,
+            family_context=family_context,
+        )
+
+    @patch("app.services.rag.datetime")
+    def test_build_system_prompt_with_owner(self, mock_dt: MagicMock) -> None:
+        """Owner name and date appear in the system prompt."""
+        mock_dt.now.return_value = datetime(2026, 2, 21, 12, 0, 0)
+        svc = self._make_rag_service(owner_name="Alice")
+
+        prompt = svc._build_system_prompt("some retrieved context")
+
+        assert "Alice's second brain" in prompt
+        assert "Saturday, February 21, 2026" in prompt
+        assert "Alice's" in prompt
+        assert "some retrieved context" in prompt
+        assert "a personal second brain" not in prompt
+        assert "their" not in prompt
+
+    def test_build_system_prompt_with_family(self) -> None:
+        """Family context block is included when family_context is set."""
+        svc = self._make_rag_service(owner_name="Alice", family_context="Bob (spouse); Charlie (child)")
+
+        prompt = svc._build_system_prompt("context here")
+
+        assert "Family context: Bob (spouse); Charlie (child)." in prompt
+        assert "Alice's second brain" in prompt
+
+    def test_build_system_prompt_without_owner(self) -> None:
+        """Generic fallback when no owner name is set."""
+        svc = self._make_rag_service(owner_name="", family_context="")
+
+        prompt = svc._build_system_prompt("context here")
+
+        assert "a personal second brain" in prompt
+        assert "their" in prompt
+        assert "Family context:" not in prompt
+        assert "context here" in prompt

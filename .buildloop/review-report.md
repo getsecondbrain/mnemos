@@ -1,12 +1,12 @@
-# Review Report — A6.4
+# Review Report — A6.5
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (python3 -m py_compile succeeds)
-- Tests: PASS (5/5 tests pass in 0.18s; full suite: 1 pre-existing failure in test_embedding.py::TestSearchSimilar::test_returns_scored_chunks — unrelated to this task)
-- Lint: SKIPPED (ruff/flake8 not installed in host Python; py_compile confirms no syntax errors)
-- Docker: SKIPPED (no docker-compose changes in this task)
+- Build: PASS (py_compile succeeds)
+- Tests: PASS (9/9 in test_rag.py, 16/16 combined with test_conversations.py)
+- Lint: SKIPPED (no ruff or flake8 installed in venv)
+- Docker: SKIPPED (no compose files changed)
 
 ## Findings
 
@@ -16,20 +16,16 @@
   "medium": [],
   "low": [],
   "validated": [
-    "File backend/tests/test_gedcom.py exists with all 5 required tests matching the plan",
-    "textwrap.dedent correctly strips indentation — GEDCOM content has proper 0/1/2 level prefixes with no leading spaces",
-    "GEDCOM fixture contains 7 individuals (@I1@-@I7@) and 2 families (@F1@, @F2@) covering spouse, child, parent, and sibling relationships",
-    "test_import_creates_persons verifies 7 persons created with correct names and gedcom_ids",
-    "test_import_deduplicates_by_gedcom_id verifies re-import updates (not duplicates): modifies name in DB, re-imports, confirms count=7 and name restored",
-    "test_import_sets_relationships verifies all 7 relationship assignments: self, spouse, child×2, parent×2, sibling",
-    "test_import_marks_deceased verifies @I5@ (Robert Smith with DEAT tag) is_deceased=True and living persons are False",
-    "test_import_invalid_file uses client fixture with POST /api/owner/gedcom, sends bad.txt, asserts 422 and detail matches router error message",
-    "Import paths correct: app.models.person.Person and app.services.gedcom_import.{import_gedcom_file, GedcomImportResult} both exist",
-    "Tests use session and client fixtures from conftest.py correctly — no new fixture conflicts",
-    "No new model files created — known pattern #2 (models/__init__.py import) not applicable",
-    "Service uses source ID space (GEDCOM pointers @I1@ etc.) for graph computations per known pattern #6",
-    "No duplicate function definitions in the test file per known pattern #5",
-    "No regressions: 164 other tests still pass; 1 pre-existing failure in test_embedding.py unrelated to changes"
+    "All 3 new tests (test_build_system_prompt_with_owner, test_build_system_prompt_with_family, test_build_system_prompt_without_owner) pass",
+    "No conflicts with A6.3 tests in test_conversations.py — all 16 tests pass when run together",
+    "datetime patch in test_build_system_prompt_with_owner correctly targets app.services.rag.datetime and uses a real datetime return value so .strftime() works",
+    "Assertions match production code behavior: owner_preamble, possessive, family_block, and context all verified against SYSTEM_PROMPT_TEMPLATE in rag.py:23-37",
+    "'their' not in prompt assertion in test_with_owner is safe — 'their' only appears via {possessive} substitution, not in static template text",
+    "No duplicate helper functions — _make_rag_service defined once at line 238",
+    "New imports (datetime, patch) correctly added alongside existing imports at file top",
+    "RAGService constructor call in _make_rag_service matches __init__ signature (rag.py:57-64) including owner_name and family_context params",
+    "test_without_owner correctly passes empty strings matching the default parameter values in RAGService.__init__",
+    "Existing tests (TestQuery, TestStreamQuery) unchanged and still pass"
   ]
 }
 ```
