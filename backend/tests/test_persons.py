@@ -105,6 +105,47 @@ def test_update_person_name(client, person_id):
     assert data["name"] == "Updated Name"
 
 
+def test_create_person_with_relationship(client):
+    resp = client.post(
+        "/api/persons",
+        json={"name": "Mom", "relationship_to_owner": "parent"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "Mom"
+    assert data["relationship_to_owner"] == "parent"
+    assert data["is_deceased"] is False
+
+
+def test_update_person_relationship(client, person_id):
+    # Set relationship
+    resp = client.put(
+        f"/api/persons/{person_id}",
+        json={"relationship_to_owner": "friend"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["relationship_to_owner"] == "friend"
+
+    # Change relationship
+    resp = client.put(
+        f"/api/persons/{person_id}",
+        json={"relationship_to_owner": "sibling"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["relationship_to_owner"] == "sibling"
+
+
+def test_update_person_deceased(client, person_id):
+    resp = client.put(
+        f"/api/persons/{person_id}",
+        json={"is_deceased": True},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_deceased"] is True
+    assert data["name"] == "Test Person"  # name unchanged
+
+
 def test_update_person_not_found(client):
     resp = client.put("/api/persons/nonexistent-id", json={"name": "X"})
     assert resp.status_code == 404

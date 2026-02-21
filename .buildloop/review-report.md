@@ -1,12 +1,12 @@
-# Review Report — A6.1
+# Review Report — A6.2
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (python3 -m py_compile succeeded)
-- Tests: PASS (5/5 tests passed in 0.30s)
-- Lint: PASS (ruff check — all checks passed)
-- Docker: SKIPPED (no docker compose changes in this task)
+- Build: PASS (py_compile succeeds)
+- Tests: PASS (27/27 passed, including all 3 new tests)
+- Lint: SKIPPED (ruff and flake8 not installed in this environment)
+- Docker: SKIPPED (no docker-compose changes in this task)
 
 ## Findings
 
@@ -16,16 +16,20 @@
   "medium": [],
   "low": [],
   "validated": [
-    "test_get_owner_profile_creates_default: Correctly verifies lazy singleton creation with empty defaults (name='', date_of_birth=None, bio=None, person_id=None, updated_at present)",
-    "test_update_owner_profile: Correctly verifies PUT updates name/dob/bio and persistence via follow-up GET",
-    "test_update_owner_profile_links_person: Correctly creates Person via session fixture, PUTs person_id, verifies person.relationship_to_owner set to 'self' via session.refresh",
-    "test_get_owner_family: Correctly creates 3 persons (spouse, child, self), verifies family endpoint returns only 2 (excludes 'self'), uses set comparison for order-independent assertion",
-    "test_family_excludes_unrelated_persons: Correctly creates persons with and without relationship_to_owner, verifies only related (non-null) persons returned",
-    "Import of Person model from app.models.person is correct and sufficient — model is registered in models/__init__.py",
-    "All tests use client and session fixtures from conftest.py following existing test patterns (top-level functions, pre-mocked auth)",
-    "Person records created directly via session (not via API), correctly isolating owner endpoint tests",
-    "File has from __future__ import annotations per project convention",
-    "No security concerns — tests exercise read-only and write operations without sensitive data"
+    "All 3 new tests (test_create_person_with_relationship, test_update_person_relationship, test_update_person_deceased) pass successfully",
+    "Tests correctly exercise the PersonCreate and PersonUpdate schemas with relationship_to_owner and is_deceased fields",
+    "test_create_person_with_relationship verifies POST /api/persons returns 201, echoes relationship_to_owner='parent', and defaults is_deceased=False",
+    "test_update_person_relationship verifies PUT /api/persons/{id} sets and then changes relationship_to_owner (friend→sibling), both return 200",
+    "test_update_person_deceased verifies PUT /api/persons/{id} sets is_deceased=True while preserving name='Test Person' unchanged",
+    "New tests are correctly placed in the '# --- Person CRUD ---' section after test_update_person_name, consistent with plan",
+    "Tests use existing fixtures (client, person_id) from conftest.py — no new fixtures or dependencies needed",
+    "No duplicate function definitions in test file (checked via grep)",
+    "All 24 pre-existing tests continue to pass — no regressions",
+    "Router at persons.py:207-210 correctly handles relationship_to_owner and is_deceased in update_person via model_dump(exclude_unset=True)",
+    "Router at persons.py:47-55 correctly passes relationship_to_owner and is_deceased from PersonCreate to Person constructor",
+    "Person model (person.py:49-50) has both fields with correct types and defaults (relationship_to_owner: str|None=None, is_deceased: bool=False)",
+    "PersonRead schema (person.py:85-86) includes both fields so they are returned in API responses",
+    "No imports added or modified — existing imports are sufficient for the new tests"
   ]
 }
 ```
