@@ -8,6 +8,7 @@ answer via the LLM service.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -19,12 +20,13 @@ from app.services.llm import LLMService
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the digital memory of a person. You have access to their
-memories, notes, documents, and life experiences. Answer questions based on the retrieved
-context below. If you don't have relevant memories, say so honestly.
+SYSTEM_PROMPT_TEMPLATE = """You are the AI memory assistant for {owner_preamble}. Today is {today_date}.
+{family_block}
+You have access to {possessive} memories, notes, documents, and life experiences. Answer questions
+based on the retrieved context below. If you don't have relevant memories, say so honestly.
 
 Always cite which memories you're drawing from. Distinguish between:
-- ORIGINAL SOURCE: Direct quotes or information from the person's own memories
+- ORIGINAL SOURCE: Direct quotes or information from {possessive} own memories
 - CONNECTION: Your inference about how memories relate to each other
 
 Pay close attention to [Tags: ...] annotations on memories — these are user-assigned labels
@@ -50,7 +52,7 @@ class RAGResult:
 class RAGService:
     """Retrieval Augmented Generation pipeline over encrypted memories."""
 
-    __slots__ = ("embedding_service", "llm_service", "encryption_service", "db_session")
+    __slots__ = ("embedding_service", "llm_service", "encryption_service", "db_session", "owner_name", "family_context")
 
     def __init__(
         self,
@@ -58,11 +60,39 @@ class RAGService:
         llm_service: LLMService,
         encryption_service: EncryptionService,
         db_session: Session | None = None,
+        owner_name: str = "",
+        family_context: str = "",
     ) -> None:
         self.embedding_service = embedding_service
         self.llm_service = llm_service
         self.encryption_service = encryption_service
         self.db_session = db_session
+        self.owner_name = owner_name
+        self.family_context = family_context
+
+    def _build_system_prompt(self, context: str) -> str:
+        """Build the system prompt with owner context, date, and retrieved memories."""
+        today_date = datetime.now().strftime("%A, %B %d, %Y")
+
+        if self.owner_name:
+            owner_preamble = f"{self.owner_name}'s second brain"
+            possessive = f"{self.owner_name}'s"
+        else:
+            owner_preamble = "a personal second brain"
+            possessive = "their"
+
+        if self.family_context:
+            family_block = f"Family context: {self.family_context}."
+        else:
+            family_block = ""
+
+        return SYSTEM_PROMPT_TEMPLATE.format(
+            owner_preamble=owner_preamble,
+            today_date=today_date,
+            family_block=family_block,
+            possessive=possessive,
+            context=context,
+        )
 
     async def query(
         self,
@@ -91,7 +121,7 @@ class RAGService:
         context_chunks, source_ids = self._decrypt_chunks(scored_chunks)
 
         context = "\n\n---\n\n".join(context_chunks)
-        system_prompt = SYSTEM_PROMPT.format(context=context)
+        system_prompt = self._build_system_prompt(context)
 
         response = await self.llm_service.generate(
             prompt=question,
@@ -138,7 +168,7 @@ class RAGService:
             return _empty_stream(), []
 
         context = "\n\n---\n\n".join(context_chunks)
-        system_prompt = SYSTEM_PROMPT.format(context=context)
+        system_prompt = self._build_system_prompt(context)
 
         token_stream = self.llm_service.stream(
             prompt=question,

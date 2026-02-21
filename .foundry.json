@@ -1,9 +1,9 @@
 {
   "planner_model": "opus",
   "builder_model": "opus",
-  "validator_model": "opus",
-  "fixer_model": "opus",
-  "discovery_model": "opus",
+  "reviewer_model": "sonnet",
+  "fixer_model": "sonnet",
+  "discovery_model": "sonnet",
 
   "max_fix_attempts": 3,
   "pause_between_tasks_secs": 5,
