@@ -268,6 +268,21 @@ export interface LoopSetting {
   enabled: boolean;
 }
 
+/** Valid relationship_to_owner values from backend Person model CHECK constraint */
+export type RelationshipToOwner =
+  | "self"
+  | "spouse"
+  | "child"
+  | "parent"
+  | "sibling"
+  | "grandparent"
+  | "grandchild"
+  | "aunt_uncle"
+  | "cousin"
+  | "in_law"
+  | "friend"
+  | "other";
+
 /** Matches backend PersonRead schema */
 export interface Person {
   id: string;
@@ -276,6 +291,9 @@ export interface Person {
   name_dek: string | null;
   immich_person_id: string | null;
   face_thumbnail_path: string | null;
+  relationship_to_owner: RelationshipToOwner | null;
+  is_deceased: boolean;
+  gedcom_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -291,6 +309,9 @@ export interface PersonCreate {
   name_encrypted?: string;
   name_dek?: string;
   immich_person_id?: string;
+  relationship_to_owner?: RelationshipToOwner;
+  is_deceased?: boolean;
+  gedcom_id?: string;
 }
 
 /** Matches backend PersonUpdate schema */
@@ -298,6 +319,9 @@ export interface PersonUpdate {
   name?: string;
   name_encrypted?: string;
   name_dek?: string;
+  relationship_to_owner?: RelationshipToOwner;
+  is_deceased?: boolean;
+  gedcom_id?: string;
 }
 
 /** Matches backend MemoryPersonRead schema */
@@ -316,4 +340,31 @@ export interface LinkPersonRequest {
   person_id: string;
   source?: "manual" | "immich" | "auto";
   confidence?: number;
+}
+
+/** Matches backend OwnerProfileRead schema */
+export interface OwnerProfile {
+  name: string;
+  date_of_birth: string | null;
+  bio: string | null;
+  person_id: string | null;
+  updated_at: string;
+}
+
+/** Matches backend OwnerProfileUpdate schema */
+export interface OwnerProfileUpdate {
+  name?: string;
+  date_of_birth?: string | null;
+  bio?: string | null;
+  person_id?: string | null;
+}
+
+/** Matches backend GedcomImportResult dataclass */
+export interface GedcomImportResult {
+  persons_created: number;
+  persons_updated: number;
+  persons_skipped: number;
+  families_processed: number;
+  root_person_id: string | null;
+  errors: string[];
 }
