@@ -24,6 +24,9 @@ import type {
   PersonUpdate,
   MemoryPersonLink,
   LinkPersonRequest,
+  OwnerProfile,
+  OwnerProfileUpdate,
+  GedcomImportResult,
 } from "../types";
 
 const BASE_URL = "/api";
@@ -721,6 +724,54 @@ export async function pushNameToImmich(personId: string): Promise<{ status: stri
   return request<{ status: string }>(`/persons/${personId}/push-name-to-immich`, {
     method: "POST",
   });
+}
+
+// --- Owner endpoints --------------------------------------------------------
+
+export async function getOwnerProfile(): Promise<OwnerProfile> {
+  return request<OwnerProfile>("/owner/profile");
+}
+
+export async function updateOwnerProfile(body: OwnerProfileUpdate): Promise<OwnerProfile> {
+  return request<OwnerProfile>("/owner/profile", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getOwnerFamily(): Promise<Person[]> {
+  return request<Person[]>("/owner/family");
+}
+
+export async function importGedcom(
+  file: File,
+  ownerGedcomId?: string,
+): Promise<GedcomImportResult> {
+  const headers: Record<string, string> = {};
+  const token = getAccessTokenFn?.();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const query = new URLSearchParams();
+  if (ownerGedcomId) query.set("owner_gedcom_id", ownerGedcomId);
+  const qs = query.toString();
+
+  const res = await fetch(`${BASE_URL}/owner/gedcom${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(res.status, detail.detail ?? res.statusText);
+  }
+
+  return res.json() as Promise<GedcomImportResult>;
 }
 
 // --- Geocoding (proxied through backend for Nominatim ToS compliance) -------
