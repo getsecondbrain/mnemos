@@ -65,6 +65,19 @@ def _run_migrations(eng) -> None:
                     text(f"ALTER TABLE memories ADD COLUMN {col_name} {col_def}")
                 )
 
+    # Person model extensions (A1.2)
+    person_cols = [c["name"] for c in insp.get_columns("persons")]
+    for col_name, col_def in [
+        ("relationship_to_owner", "TEXT"),
+        ("is_deceased", "INTEGER DEFAULT 0"),
+        ("gedcom_id", "TEXT"),
+    ]:
+        if col_name not in person_cols:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(f"ALTER TABLE persons ADD COLUMN {col_name} {col_def}")
+                )
+
 
 def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
