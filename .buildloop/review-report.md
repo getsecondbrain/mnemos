@@ -1,12 +1,12 @@
-# Review Report — A6.3
+# Review Report — A6.4
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (py_compile succeeds, no syntax errors)
-- Tests: PASS (7/7 pass, 0 regressions when run alongside test_chat.py — 17/17 total)
-- Lint: SKIPPED (ruff and flake8 not installed in environment)
-- Docker: SKIPPED (no compose files changed)
+- Build: PASS (python3 -m py_compile succeeds)
+- Tests: PASS (5/5 tests pass in 0.18s; full suite: 1 pre-existing failure in test_embedding.py::TestSearchSimilar::test_returns_scored_chunks — unrelated to this task)
+- Lint: SKIPPED (ruff/flake8 not installed in host Python; py_compile confirms no syntax errors)
+- Docker: SKIPPED (no docker-compose changes in this task)
 
 ## Findings
 
@@ -14,24 +14,22 @@
 {
   "high": [],
   "medium": [],
-  "low": [
-    {"file": "backend/tests/test_conversations.py", "line": 12, "issue": "Unused import: `from sqlmodel import Session` — Session is never referenced in the test file (the `session` fixture comes from conftest.py)", "category": "style"},
-    {"file": "backend/tests/test_conversations.py", "line": 15, "issue": "Unused import: `_clean_title` is imported but never called directly — it is only tested implicitly via `_generate_title`. The import in the comment on line 81 is not a usage.", "category": "style"}
-  ],
+  "low": [],
   "validated": [
-    "All 5 required tests from the task description are present: test_persist_exchange_returns_needs_title, test_ai_title_generation, test_system_prompt_includes_date, test_system_prompt_includes_owner_name, test_system_prompt_without_owner",
-    "_persist_exchange tests correctly verify the (Conversation, bool) return tuple, checking both True (default title) and False (custom title) paths against chat.py:129",
-    "test_ai_title_generation correctly patches app.db.engine (not app.routers.chat.engine) for the lazy import at chat.py:177, uses StaticPool in-memory engine for cross-session DB verification",
-    "LLM mock returns quoted title '\"Travel Plans for Europe\"' and test correctly asserts _clean_title strips quotes to 'Travel Plans for Europe' in both WebSocket message and DB",
-    "test_ai_title_generation verifies temperature=0.3 kwarg matches chat.py:168",
-    "WebSocket send_json assertions correctly verify the {type, conversation_id, title} message shape matching chat.py:187-191",
-    "datetime mock in test_system_prompt_includes_date correctly patches app.services.rag.datetime (matching the module-level `from datetime import datetime` at rag.py:11) and asserts Saturday, February 21, 2026 format matching rag.py:75 strftime pattern",
-    "test_system_prompt_includes_owner_name assertions match rag.py:78 (owner_preamble), rag.py:79 (possessive), rag.py:85 (family_block)",
-    "test_system_prompt_without_owner assertions match rag.py:81 (fallback preamble), rag.py:82 (fallback possessive), rag.py:87 (empty family_block)",
-    "RAGService constructor in _make_rag_service passes db_session=None which is safe since _build_system_prompt does not access db_session",
-    "No duplicate function definitions found in the test file",
-    "No security issues — test file contains only test fixtures and assertions, no production code changes",
-    "session.expire_all() at line 115 correctly forces DB re-read after _generate_title's separate Session commits via the same StaticPool engine"
+    "File backend/tests/test_gedcom.py exists with all 5 required tests matching the plan",
+    "textwrap.dedent correctly strips indentation — GEDCOM content has proper 0/1/2 level prefixes with no leading spaces",
+    "GEDCOM fixture contains 7 individuals (@I1@-@I7@) and 2 families (@F1@, @F2@) covering spouse, child, parent, and sibling relationships",
+    "test_import_creates_persons verifies 7 persons created with correct names and gedcom_ids",
+    "test_import_deduplicates_by_gedcom_id verifies re-import updates (not duplicates): modifies name in DB, re-imports, confirms count=7 and name restored",
+    "test_import_sets_relationships verifies all 7 relationship assignments: self, spouse, child×2, parent×2, sibling",
+    "test_import_marks_deceased verifies @I5@ (Robert Smith with DEAT tag) is_deceased=True and living persons are False",
+    "test_import_invalid_file uses client fixture with POST /api/owner/gedcom, sends bad.txt, asserts 422 and detail matches router error message",
+    "Import paths correct: app.models.person.Person and app.services.gedcom_import.{import_gedcom_file, GedcomImportResult} both exist",
+    "Tests use session and client fixtures from conftest.py correctly — no new fixture conflicts",
+    "No new model files created — known pattern #2 (models/__init__.py import) not applicable",
+    "Service uses source ID space (GEDCOM pointers @I1@ etc.) for graph computations per known pattern #6",
+    "No duplicate function definitions in the test file per known pattern #5",
+    "No regressions: 164 other tests still pass; 1 pre-existing failure in test_embedding.py unrelated to changes"
   ]
 }
 ```
