@@ -1,12 +1,12 @@
-# Review Report — A4.4
+# Review Report — A5.1
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (tsc -b && vite build succeeded, People chunk 12.60 kB gzipped 3.64 kB)
-- Tests: SKIPPED (no frontend unit tests exist for this component; task is UI-only)
-- Lint: PASS (0 errors, 30 warnings — all pre-existing in other files)
-- Docker: SKIPPED (no docker-compose changes in this task)
+- Build: PASS (py_compile succeeded for all 3 changed files)
+- Tests: PASS (668 passed; 28 failures + 5 errors are all pre-existing, verified identical on clean main branch)
+- Lint: SKIPPED (ruff not installed on host; py_compile confirmed no syntax errors)
+- Docker: PASS (docker compose config validated successfully)
 
 ## Findings
 
@@ -15,21 +15,21 @@
   "high": [],
   "medium": [],
   "low": [
-    {"file": "frontend/src/components/People.tsx", "line": 17, "issue": "RELATIONSHIP_LABELS duplicates the mapping from Settings.tsx RELATIONSHIP_OPTIONS (lines 38-50). Plan explicitly acknowledged this ('extraction is a separate concern') so it's acceptable, but creates code drift risk per Known Pattern #2.", "category": "inconsistency"},
-    {"file": "frontend/src/components/People.tsx", "line": 13, "issue": "Plan specified adding RelationshipToOwner to the type import but it was not imported. Not needed at runtime since getRelationshipLabel uses Record<string, string> and Person.relationship_to_owner is already typed via the Person interface. TypeScript compiles cleanly.", "category": "inconsistency"}
+    {"file": "backend/app/worker.py", "line": 1450, "issue": "Owner name is interpolated directly into the LLM system prompt f-string. A maliciously crafted owner name could alter prompt behavior. However, since the owner is the sole authenticated user of their own single-user vault, this is self-injection with no practical security impact.", "category": "security"},
+    {"file": "backend/app/worker.py", "line": 127, "issue": "Owner name is cached permanently for the worker's lifetime. If the user updates their name via the API, the worker continues using the old name until the process restarts. Acceptable per the plan's design decision, but worth noting.", "category": "inconsistency"}
   ],
   "validated": [
-    "PersonCard shows relationship badge after name with correct styling (text-xs text-blue-400 bg-blue-900/30 rounded px-1.5 py-0.5) — lines 85-88",
-    "PersonCard shows '(deceased)' indicator in gray (text-xs text-gray-500) when is_deceased is true — lines 90-92",
-    "Badge correctly excluded when relationship_to_owner is null (falsy check) or 'self' (explicit !== check) — line 85",
-    "Selected person detail view shows same badge and deceased indicator — lines 350-357",
-    "getRelationshipLabel correctly maps raw backend values (e.g. 'aunt_uncle' → 'Aunt/Uncle') with fallback to raw value for unknown keys — lines 31-32",
-    "RELATIONSHIP_LABELS covers all 11 values from the RelationshipToOwner union type (excluding 'self' which is filtered out before lookup)",
-    "TypeScript compilation passes with no errors (tsc --noEmit clean)",
-    "ESLint passes with 0 errors (30 pre-existing warnings in other files)",
-    "Vite production build succeeds with code splitting intact",
-    "No new dependencies or external resources added — no CSP changes needed (Known Pattern #1 verified)",
-    "PersonDetail interface includes relationship_to_owner and is_deceased fields (types/index.ts lines 294-295, 302-303) — type contract is correct"
+    "worker.py: _owner_name_cache added to __slots__ (line 74) and initialized to None in __init__ (line 94)",
+    "worker.py: _cached_owner_name helper (lines 122-140) correctly uses None sentinel, catches exceptions, lazy-imports OwnerProfile to avoid circular imports, and reads from DB only once",
+    "worker.py: enrichment system prompt (lines 1446-1457) correctly branches on owner_name — uses personalized prefix when set, falls back to generic 'thoughtful memory assistant' when empty",
+    "worker.py: ConnectionService constructor (line 370) correctly passes owner_name=self._cached_owner_name(engine)",
+    "connections.py: owner_name added to __slots__ (line 32) and __init__ signature with default '' (lines 34-44) — backward compatible",
+    "connections.py: _explain_relationship (lines 225-227) correctly prefixes system prompt with owner name when set",
+    "memories.py: get_owner_context imported at module level (line 25) — correct, avoids repeated per-request import overhead",
+    "memories.py: reflect_on_memory endpoint (lines 297-298) correctly queries owner context and prefixes reflection system prompt",
+    "Backward compatibility: dependencies.py:143, tests/test_connections.py:155, and tests/test_search.py:111 all construct ConnectionService without owner_name — the default '' preserves existing behavior",
+    "Thread safety: _owner_name_cache is only written/read from the single worker thread — no race conditions",
+    "No new test failures introduced — all 28 failures and 5 errors are pre-existing (verified on clean main branch)"
   ]
 }
 ```

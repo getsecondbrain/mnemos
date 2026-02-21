@@ -22,6 +22,7 @@ from app.services.geocoding import GeocodingService
 from app.services.git_ops import GitOpsService
 from app.services.ingestion import IngestionService
 from app.services.llm import LLMError, LLMService
+from app.services.owner_context import get_owner_context
 from app.services.vault import VaultService
 
 from sqlalchemy.exc import IntegrityError
@@ -293,7 +294,10 @@ async def reflect_on_memory(
     year = memory.captured_at.year
 
     # 6. Call LLM (local Ollama only — no fallback configured)
+    owner_name, _ = get_owner_context(session)
+    owner_prefix = f"You are {owner_name}'s memory assistant. " if owner_name else ""
     system_prompt = (
+        f"{owner_prefix}"
         f"Given this memory from {year}, generate a single short question "
         "(under 15 words) that invites the user to reflect on it. "
         "Be warm, personal, and specific to the content. "

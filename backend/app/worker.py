@@ -71,6 +71,7 @@ class BackgroundWorker:
         "_llm_service",
         "_settings",
         "_last_vault_health",
+        "_owner_name_cache",
     )
 
     def __init__(
@@ -90,6 +91,7 @@ class BackgroundWorker:
             settings = get_settings()
         self._settings = settings
         self._last_vault_health = None
+        self._owner_name_cache: str | None = None  # lazily populated
 
     def start(self) -> None:
         """Start the daemon worker thread."""
@@ -116,6 +118,26 @@ class BackgroundWorker:
         """Get the DB engine (deferred import to avoid circular imports)."""
         from app.db import engine
         return engine
+
+    def _cached_owner_name(self, engine) -> str:
+        """Read OwnerProfile.name once per worker instance, cache the result.
+
+        Returns the owner name or "" if no profile exists.
+        """
+        if self._owner_name_cache is not None:
+            return self._owner_name_cache
+
+        from app.models.owner import OwnerProfile
+
+        try:
+            with Session(engine) as session:
+                profile = session.get(OwnerProfile, 1)
+                self._owner_name_cache = profile.name if profile and profile.name else ""
+        except Exception:
+            logger.warning("Failed to read owner profile for worker", exc_info=True)
+            self._owner_name_cache = ""
+
+        return self._owner_name_cache
 
     def _persist_job(
         self,
@@ -345,6 +367,7 @@ class BackgroundWorker:
                     embedding_service=self._embedding_service,
                     llm_service=self._llm_service,
                     encryption_service=encryption_service,
+                    owner_name=self._cached_owner_name(engine),
                 )
                 conn_result = loop.run_until_complete(
                     connection_service.find_connections(
@@ -1420,11 +1443,23 @@ class BackgroundWorker:
             f"{enrichment_instruction}"
         )
 
+        # Build system prompt with optional owner name prefix
+        owner_name = self._cached_owner_name(engine)
+        if owner_name:
+            enrich_system = (
+                f"You are {owner_name}'s memory assistant. "
+                "Output only a single question, under 20 words. No preamble, no quotes."
+            )
+        else:
+            enrich_system = (
+                "You are a thoughtful memory assistant. Output only a single question, "
+                "under 20 words. No preamble, no quotes."
+            )
+
         response = loop.run_until_complete(
             self._llm_service.generate(
                 prompt=prompt,
-                system="You are a thoughtful memory assistant. Output only a single question, "
-                       "under 20 words. No preamble, no quotes.",
+                system=enrich_system,
                 temperature=0.7,
                 local_only=True,
             )

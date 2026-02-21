@@ -29,17 +29,19 @@ class ConnectionResult:
 class ConnectionService:
     """Auto-discover and create neural links between memories."""
 
-    __slots__ = ("embedding_service", "llm_service", "encryption_service")
+    __slots__ = ("embedding_service", "llm_service", "encryption_service", "owner_name")
 
     def __init__(
         self,
         embedding_service: EmbeddingService,
         llm_service: LLMService,
         encryption_service: EncryptionService,
+        owner_name: str = "",
     ) -> None:
         self.embedding_service = embedding_service
         self.llm_service = llm_service
         self.encryption_service = encryption_service
+        self.owner_name = owner_name
 
     async def find_connections(
         self,
@@ -220,9 +222,12 @@ class ConnectionService:
             "TYPE: <relationship_type>\n"
             "EXPLANATION: <your explanation>"
         )
+        conn_system = "You are a knowledge graph assistant that identifies relationships between pieces of information."
+        if self.owner_name:
+            conn_system = f"You are {self.owner_name}'s memory assistant. " + conn_system
         response = await self.llm_service.generate(
             prompt=prompt,
-            system="You are a knowledge graph assistant that identifies relationships between pieces of information.",
+            system=conn_system,
             temperature=0.3,
         )
         return self._parse_llm_response(response.text)
