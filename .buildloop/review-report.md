@@ -1,12 +1,12 @@
-# Review Report — A1.3
+# Review Report — A1.4
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (py_compile succeeds for both db.py and models/__init__.py)
-- Tests: PASS (157 passed with A1.3 changes; 36 pre-existing failures unrelated to A1.3 — auth, OCR, search, tags)
-- Lint: SKIPPED (ruff not installed in venv)
-- Docker: PASS (docker compose config validates)
+- Build: PASS (py_compile succeeds for both owner.py and main.py)
+- Tests: PASS (157 passed, 1 pre-existing failure in test_embedding.py unrelated to A1.4)
+- Lint: SKIPPED (ruff/flake8/pyflakes not installed in local environment; manual import audit found no unused imports)
+- Docker: PASS (docker compose config validates successfully)
 
 ## Findings
 
@@ -15,31 +15,27 @@
   "high": [],
   "medium": [],
   "low": [
-    {
-      "file": "backend/app/db.py",
-      "line": 72,
-      "issue": "Schema divergence (Known Pattern #5): Person model defines CheckConstraint on relationship_to_owner (person.py:35-41) and unique=True on gedcom_id (person.py:51), plus index=True on relationship_to_owner (person.py:49). ALTER TABLE cannot replicate CHECK, UNIQUE, or INDEX constraints in SQLite. Fresh DBs get all three; migrated DBs get none. Plan explicitly acknowledges this as acceptable since Pydantic validation enforces values at the API layer.",
-      "category": "inconsistency"
-    },
-    {
-      "file": "backend/app/db.py",
-      "line": 72,
-      "issue": "Minor type divergence: fresh DB creates is_deceased as BOOLEAN NOT NULL (no SQL default, Python model provides it). Migration creates INTEGER DEFAULT 0 (implicitly nullable). Both work correctly since SQLite treats BOOLEAN and INTEGER identically and all access goes through SQLModel which always provides the default.",
-      "category": "inconsistency"
-    }
+    {"file": "backend/app/routers/owner.py", "line": 57, "issue": "When person_id changes from person A to person B, the old person A retains relationship_to_owner='self', creating two 'self' persons. Similarly, setting person_id to None does not clear the old person's 'self' relationship. However, the plan's reference code explicitly shows this behavior (lines 82-88 of current-plan.md), so the implementation matches spec. Flagging as low because it is a spec-level gap, not an implementation error.", "category": "inconsistency"},
+    {"file": "backend/app/routers/owner.py", "line": 99, "issue": "The db: Session = Depends(get_session) parameter in upload_gedcom is injected but unused — the endpoint is a 501 stub. This creates an unnecessary DB session per request. Intentional placeholder for A3.3 wiring per the plan.", "category": "style"}
   ],
   "validated": [
-    "OwnerProfile import in __init__.py follows established pattern (noqa: F401, correct module path)",
-    "Fresh DB test: create_all() creates owner_profile table and all 3 new Person columns",
-    "Migration test: ALTER TABLE adds relationship_to_owner, is_deceased, gedcom_id to existing persons table",
-    "Migration is idempotent: running _run_migrations() twice does not raise errors",
-    "Column definitions match Person model: relationship_to_owner TEXT (nullable), is_deceased INTEGER DEFAULT 0 (bool→int), gedcom_id TEXT (nullable)",
-    "f-string in ALTER TABLE SQL (line 78) uses only hardcoded tuple values, no SQL injection risk",
-    "Migration block follows exact same pattern as existing memories location fields block (lines 56-66)",
-    "Inspector creates separate column cache per table, so persons inspection at line 69 is independent of memories inspection at line 38",
-    "create_db_and_tables() calls create_all() before _run_migrations(), guaranteeing persons table exists before migration runs",
-    "Each ALTER TABLE wrapped in its own transaction (eng.begin()), allowing crash-safe partial migration recovery",
-    "from app.models import OwnerProfile succeeds and returns correct __tablename__ = 'owner_profile'"
+    "All 4 routes registered correctly: /api/owner/profile (GET, PUT), /api/owner/family (GET), /api/owner/gedcom (POST)",
+    "Router imported and registered in main.py line 14 (import) and line 249 (include_router), alphabetically between loop_settings and persons",
+    "_get_or_create_profile follows testament.py:92-100 pattern exactly (id=1 singleton, get-or-create)",
+    "OwnerProfileRead omits id field; OwnerProfileUpdate omits updated_at — matches Known Pattern #1 (singleton conventions)",
+    "updated_at explicitly set to datetime.now(timezone.utc) on every update (line 67) — not relying on schema",
+    "PUT /profile uses model_dump(exclude_unset=True) for partial updates — matches testament.py:147 pattern",
+    "PUT /profile validates person exists (404) before setting relationship_to_owner='self' (line 58-63)",
+    "GET /family correctly filters relationship_to_owner IS NOT NULL AND != 'self', ordered by relationship then name",
+    "POST /gedcom validates .ged extension (422) and returns 501 Not Implemented as specified for stub",
+    "All endpoints protected by require_auth dependency — no unauthenticated access",
+    "All imports are used — no dead imports (Known Pattern #8 checked manually)",
+    "All routes are static paths (/profile, /family, /gedcom) — no route ordering issues (Known Pattern #7 satisfied)",
+    "No str(exc) in API responses (Known Pattern #3 checked)",
+    "No injection vulnerabilities — SQLModel/SQLAlchemy parameterized queries used throughout",
+    "OwnerProfile model registered in models/__init__.py (line 16) — confirmed from A1.3",
+    "Person model has relationship_to_owner field with CHECK constraint and index — confirmed from A1.2",
+    "157 existing tests pass with no regressions introduced"
   ]
 }
 ```
