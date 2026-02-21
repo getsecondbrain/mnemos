@@ -602,11 +602,7 @@ export default function Timeline() {
         <OnThisDay onMemoryCreated={handleRefresh} />
         <QuickCapture onMemoryCreated={handleRefresh} />
         <p className="text-gray-500 text-center mt-4">
-          No memories yet. Type something above or{" "}
-          <Link to="/capture" className="text-blue-400 hover:text-blue-300 underline">
-            use the full capture page
-          </Link>{" "}
-          to get started.
+          No memories yet. Type something above to get started.
         </p>
       </div>
     );

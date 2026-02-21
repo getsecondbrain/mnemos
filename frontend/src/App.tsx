@@ -4,7 +4,6 @@ import { AuthProvider, useAuthContext } from "./contexts/AuthContext";
 import Login from "./components/Login";
 import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
-import Capture from "./components/Capture";
 import Timeline from "./components/Timeline";
 import MemoryDetail from "./components/MemoryDetail";
 import Search from "./components/Search";
@@ -64,7 +63,7 @@ function AppRoutes() {
       <Routes>
         <Route element={<Layout onLogout={auth.logout} />}>
           <Route index element={<Navigate to="/timeline" replace />} />
-          <Route path="/capture" element={<Capture />} />
+          <Route path="/capture" element={<Navigate to="/timeline" replace />} />
           <Route path="/timeline" element={<Timeline />} />
           <Route path="/memory/:id" element={<MemoryDetail />} />
           <Route path="/people" element={<People />} />
