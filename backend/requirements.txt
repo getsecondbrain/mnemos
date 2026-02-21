@@ -45,6 +45,9 @@ pdf2image>=1.17,<2.0
 # File type detection
 python-magic>=0.4.27,<1.0
 
+# GEDCOM genealogy file parsing
+python-gedcom>=1.0,<2.0
+
 # Auth (JWT)
 python-jose[cryptography]>=3.3,<4.0
 

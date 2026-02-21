@@ -1,12 +1,12 @@
-# Review Report — A2.5
+# Review Report — A3.1
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (Vite build succeeds, Chat.tsx code-split to 7.62 kB chunk)
-- Tests: SKIPPED (no frontend test runner configured; no test files for Chat component)
-- Lint: PASS (0 errors, 0 warnings on changed files; 30 pre-existing warnings in other files)
-- Docker: SKIPPED (no Docker/compose files changed)
+- Build: PASS (pip install --dry-run resolves all dependencies including python-gedcom 1.1.0)
+- Tests: PASS (157 passed, 1 pre-existing failure in test_embedding.py::TestSearchSimilar::test_returns_scored_chunks — confirmed same failure on main without this change)
+- Lint: SKIPPED (no Python source files changed, only requirements.txt)
+- Docker: PASS (docker compose config validates successfully)
 
 ## Findings
 
@@ -14,18 +14,18 @@
 {
   "high": [],
   "medium": [],
-  "low": [],
+  "low": [
+    {"file": "backend/requirements.txt", "line": 49, "issue": "python-gedcom is licensed GPLv2 which is copyleft. If Mnemos is ever distributed under a permissive license, GPLv2 would require the combined work to also be GPLv2. Acceptable for self-hosted use but worth documenting.", "category": "inconsistency"}
+  ],
   "validated": [
-    "ChatMessageType union in types/index.ts:143 now includes 'title_update' — matches backend send_json at chat.py:188",
-    "Conversation interface (types/index.ts:155-160) fields match backend ConversationRead schema (models/conversation.py:23-29): id, title, created_at, updated_at",
-    "Conversation import added to Chat.tsx:4 — type used by useState<Conversation[]> at line 15",
-    "title_update case (Chat.tsx:116-140) validates conversation_id and title are non-empty strings before updating state — malformed messages are silently ignored (correct)",
-    "JSON.parse is already wrapped in try-catch (Chat.tsx:59-66, added by D9.4) — known pattern #1 satisfied",
-    "setConversations([]) called in ws.onopen (Chat.tsx:54) resets stale conversation state on reconnect",
-    "Header display (Chat.tsx:243) uses optional chaining + nullish coalescing: conversations[conversations.length - 1]?.title ?? 'Chat' — safe when array is empty (returns 'Chat')",
-    "CSS 'truncate' class on h2 (Chat.tsx:242) prevents long AI-generated titles from overflowing the header layout",
-    "Backend title_update message (chat.py:187-191) sends {type, conversation_id, title} — all three fields consumed correctly by the frontend handler",
-    "TypeScript compilation passes with zero errors (tsc --noEmit)"
+    "Dependency line added at correct location (after 'File type detection' section, before 'Auth (JWT)' section) matching plan exactly",
+    "Version constraint >=1.0,<2.0 resolves to python-gedcom 1.1.0 (latest); only 2 versions exist on PyPI (1.0.0 and 1.1.0)",
+    "Comment '# GEDCOM genealogy file parsing' follows the existing section-comment convention in requirements.txt",
+    "Package is importable: `from gedcom.parser import Parser` succeeds (verified on Python 3.9 where package is installed)",
+    "Package is pure Python with zero transitive dependencies — no system library or Dockerfile changes needed",
+    "No other files were modified beyond backend/requirements.txt (IMPL_PLAN.md changes are build-loop-managed)",
+    "docker compose config validates — no compose file changes needed or made",
+    "Existing test suite passes with same results as pre-change baseline (157 pass, 1 pre-existing fail)"
   ]
 }
 ```
