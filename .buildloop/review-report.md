@@ -1,12 +1,12 @@
-# Review Report — A4.3
+# Review Report — A4.4
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (tsc --noEmit clean, vite build succeeds, Settings.tsx code-split at 23.93 kB)
-- Tests: PASS (24/24 backend/tests/test_persons.py pass including update_person tests)
-- Lint: PASS (eslint reports no errors for Settings.tsx)
-- Docker: PASS (docker compose config validates without errors)
+- Build: PASS (tsc -b && vite build succeeded, People chunk 12.60 kB gzipped 3.64 kB)
+- Tests: SKIPPED (no frontend unit tests exist for this component; task is UI-only)
+- Lint: PASS (0 errors, 30 warnings — all pre-existing in other files)
+- Docker: SKIPPED (no docker-compose changes in this task)
 
 ## Findings
 
@@ -15,28 +15,21 @@
   "high": [],
   "medium": [],
   "low": [
-    {"file": "frontend/src/components/Settings.tsx", "line": 294, "issue": "After successful GEDCOM import, setGedcomFile(null) clears state but the <input type='file'> DOM element still displays the old filename since file inputs cannot be controlled in React. The Import button is correctly disabled, but the displayed filename is misleading.", "category": "inconsistency"},
-    {"file": "frontend/src/components/Settings.tsx", "line": 214, "issue": "setTimeout(() => setOwnerSuccess(null), 3000) is not cleaned up on component unmount. In React 18+ this is harmless (no warning), but a useEffect cleanup or ref guard would be more correct.", "category": "style"},
-    {"file": "frontend/src/components/Settings.tsx", "line": 71, "issue": "ownerProfile state variable is stored via setOwnerProfile (lines 180, 212) but never read for rendering. The individual fields (ownerName/ownerDob/ownerBio) duplicate this data. Minor unnecessary state.", "category": "style"},
-    {"file": "frontend/src/components/Settings.tsx", "line": 419, "issue": "Relationship displayed as raw backend value (e.g. 'aunt_uncle' instead of 'Aunt/Uncle'). The RELATIONSHIP_OPTIONS lookup exists at line 38 but is not used for display formatting. Plan acknowledges this as intentional per task spec.", "category": "inconsistency"}
+    {"file": "frontend/src/components/People.tsx", "line": 17, "issue": "RELATIONSHIP_LABELS duplicates the mapping from Settings.tsx RELATIONSHIP_OPTIONS (lines 38-50). Plan explicitly acknowledged this ('extraction is a separate concern') so it's acceptable, but creates code drift risk per Known Pattern #2.", "category": "inconsistency"},
+    {"file": "frontend/src/components/People.tsx", "line": 13, "issue": "Plan specified adding RelationshipToOwner to the type import but it was not imported. Not needed at runtime since getRelationshipLabel uses Record<string, string> and Person.relationship_to_owner is already typed via the Person interface. TypeScript compiles cleanly.", "category": "inconsistency"}
   ],
   "validated": [
-    "Owner Identity section is placed at TOP of settings page, immediately after <h1>Settings</h1> (line 313)",
-    "Profile form includes name, date_of_birth, and bio fields with Save button (lines 317-359)",
-    "Family members list displays '{name} ({relationship})' format with Edit/Remove buttons (lines 362-445)",
-    "Remove button clears relationship_to_owner via updatePerson(id, {relationship_to_owner: null}) — does NOT delete the Person record (line 246)",
-    "Backend persons.py update_person uses model_dump(exclude_unset=True) pattern (line 195) enabling explicit null for relationship_to_owner clearance",
-    "Inline Add Family Member form with name input, relationship dropdown (11 options, 'self' excluded), and deceased checkbox (lines 447-490)",
-    "GEDCOM file upload with Import button and result summary showing created/updated/skipped/families counts (lines 492-544)",
-    "Owner data loaded in existing useEffect Promise.all via getOwnerProfile() and getOwnerFamily() (lines 165-172)",
-    "All imports verified: getOwnerProfile, updateOwnerProfile, getOwnerFamily, importGedcom, createPerson, updatePerson exist in api.ts",
-    "All type imports verified: OwnerProfile, Person, GedcomImportResult, RelationshipToOwner exist in types/index.ts",
-    "PersonUpdate type correctly allows null for relationship_to_owner (types/index.ts line 322)",
-    "Inline edit mode for family members with name/relationship/deceased fields and Save/Cancel buttons (lines 371-411)",
-    "Error handling present on all async operations (owner save, add family, remove family, edit family, GEDCOM import)",
-    "Backend PersonRead schema fields match frontend Person type (id, name, relationship_to_owner, is_deceased, gedcom_id, etc.)",
-    "No XSS risks — all user content rendered as text nodes, no dangerouslySetInnerHTML usage",
-    "No security issues — all endpoints require auth via existing patterns"
+    "PersonCard shows relationship badge after name with correct styling (text-xs text-blue-400 bg-blue-900/30 rounded px-1.5 py-0.5) — lines 85-88",
+    "PersonCard shows '(deceased)' indicator in gray (text-xs text-gray-500) when is_deceased is true — lines 90-92",
+    "Badge correctly excluded when relationship_to_owner is null (falsy check) or 'self' (explicit !== check) — line 85",
+    "Selected person detail view shows same badge and deceased indicator — lines 350-357",
+    "getRelationshipLabel correctly maps raw backend values (e.g. 'aunt_uncle' → 'Aunt/Uncle') with fallback to raw value for unknown keys — lines 31-32",
+    "RELATIONSHIP_LABELS covers all 11 values from the RelationshipToOwner union type (excluding 'self' which is filtered out before lookup)",
+    "TypeScript compilation passes with no errors (tsc --noEmit clean)",
+    "ESLint passes with 0 errors (30 pre-existing warnings in other files)",
+    "Vite production build succeeds with code splitting intact",
+    "No new dependencies or external resources added — no CSP changes needed (Known Pattern #1 verified)",
+    "PersonDetail interface includes relationship_to_owner and is_deceased fields (types/index.ts lines 294-295, 302-303) — type contract is correct"
   ]
 }
 ```

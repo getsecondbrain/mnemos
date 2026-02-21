@@ -14,6 +14,24 @@ import type { Person, PersonDetail, Memory } from "../types";
 import FaceTagModal from "./FaceTagModal";
 import { PersonThumbnail } from "./FilterPanel";
 
+const RELATIONSHIP_LABELS: Record<string, string> = {
+  spouse: "Spouse",
+  child: "Child",
+  parent: "Parent",
+  sibling: "Sibling",
+  grandparent: "Grandparent",
+  grandchild: "Grandchild",
+  aunt_uncle: "Aunt/Uncle",
+  cousin: "Cousin",
+  in_law: "In-law",
+  friend: "Friend",
+  other: "Other",
+};
+
+function getRelationshipLabel(value: string): string {
+  return RELATIONSHIP_LABELS[value] ?? value;
+}
+
 // --- PersonCard ---
 
 function PersonCard({
@@ -64,6 +82,14 @@ function PersonCard({
       <span className="text-sm text-gray-200 font-medium truncate w-full text-center">
         {person.name}
       </span>
+      {person.relationship_to_owner && person.relationship_to_owner !== "self" && (
+        <span className="text-xs text-blue-400 bg-blue-900/30 rounded px-1.5 py-0.5">
+          {getRelationshipLabel(person.relationship_to_owner)}
+        </span>
+      )}
+      {person.is_deceased && (
+        <span className="text-xs text-gray-500">(deceased)</span>
+      )}
       {"memory_count" in person && typeof person.memory_count === "number" && (
         <span className="text-xs text-gray-500">
           {person.memory_count} {person.memory_count === 1 ? "memory" : "memories"}
@@ -321,6 +347,14 @@ export default function People() {
             <h3 className="text-lg font-semibold text-gray-200">
               {selectedPerson.name}
             </h3>
+            {selectedPerson.relationship_to_owner && selectedPerson.relationship_to_owner !== "self" && (
+              <span className="text-xs text-blue-400 bg-blue-900/30 rounded px-1.5 py-0.5">
+                {getRelationshipLabel(selectedPerson.relationship_to_owner)}
+              </span>
+            )}
+            {selectedPerson.is_deceased && (
+              <span className="text-xs text-gray-500">(deceased)</span>
+            )}
             <span className="text-sm text-gray-500">
               {selectedPerson.memory_count} {selectedPerson.memory_count === 1 ? "memory" : "memories"}
             </span>
