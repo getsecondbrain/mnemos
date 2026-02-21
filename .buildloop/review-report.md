@@ -1,12 +1,12 @@
-# Review Report — A1.1
+# Review Report — A1.2
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (`python3 -m py_compile app/models/owner.py` — no errors)
-- Tests: PASS (157 passed, 1 failed — pre-existing failure in `test_embedding.py::TestSearchSimilar::test_returns_scored_chunks` confirmed present on `main` before this change)
-- Lint: PASS (`ruff check app/models/owner.py` — all checks passed)
-- Docker: PASS (`docker compose config --quiet` — no errors; no docker-compose changes in this task)
+- Build: PASS (py_compile succeeds, model imports correctly)
+- Tests: PASS (24/24 person tests pass; 29 failures + 5 errors in full suite are pre-existing, verified via git stash)
+- Lint: SKIPPED (neither ruff nor flake8 installed in environment)
+- Docker: SKIPPED (no Docker/compose files changed in this task)
 
 ## Findings
 
@@ -14,28 +14,30 @@
 {
   "high": [],
   "medium": [],
-  "low": [],
+  "low": [
+    {
+      "file": "backend/app/models/person.py",
+      "line": 64,
+      "issue": "PersonCreate and PersonUpdate schemas accept any string for relationship_to_owner (str|None) without Pydantic-level validation against the allowed values. Invalid values will only be caught by the SQLite CheckConstraint, producing an IntegrityError (500) instead of a clean 422. This matches the plan exactly, and router-level validation is deferred to A1.5.",
+      "category": "inconsistency"
+    }
+  ],
   "validated": [
-    "File backend/app/models/owner.py exists and compiles without errors",
-    "OwnerProfile class has table=True with __tablename__='owner_profile' — matches TestamentConfig singleton pattern",
-    "OwnerProfile.id defaults to 1 with primary_key=True — singleton pattern correct",
-    "OwnerProfile.name defaults to '' (empty string, not None) — matches task spec 'str' type",
-    "OwnerProfile.date_of_birth is str|None with default=None — matches task spec",
-    "OwnerProfile.bio is str|None with default=None — matches task spec",
-    "OwnerProfile.person_id is str|None with foreign_key='persons.id' — FK verified via SQLAlchemy column introspection",
-    "OwnerProfile.updated_at uses default_factory=lambda: datetime.now(timezone.utc) — matches TestamentConfig pattern at testament.py:40",
-    "OwnerProfileRead has exactly {name, date_of_birth, bio, person_id, updated_at} — id correctly omitted (matches TestamentConfigRead pattern)",
-    "OwnerProfileRead has model_config={'from_attributes': True} — enables construction from SQLModel instances",
-    "OwnerProfileUpdate has exactly {name, date_of_birth, bio, person_id} — all optional with default=None (partial update pattern)",
-    "OwnerProfileUpdate correctly omits updated_at — per known pattern #5, must be set explicitly in router",
-    "All imports are from standard library or already-installed packages (pydantic, sqlmodel, datetime)",
-    "Module docstring present and descriptive",
-    "from __future__ import annotations present — follows project conventions",
-    "OwnerProfile model roundtrip test passed: instantiation, OwnerProfileRead.model_validate(), OwnerProfileUpdate partial dumps all work correctly",
-    "Model is NOT yet registered in models/__init__.py — this is correct per plan, deferred to task A1.3",
-    "No regressions introduced: 157 tests pass (same as baseline), 1 pre-existing failure unrelated to this change",
-    "No security concerns: model is a plain data model with no auth logic, encryption, or user input processing",
-    "No hardcoded values beyond the singleton id=1 default which is intentional"
+    "Person model has relationship_to_owner (str|None, index=True), is_deceased (bool, default=False), gedcom_id (str|None, unique=True) — all match plan",
+    "CheckConstraint on relationship_to_owner covers all 12 valid values plus NULL — matches plan exactly",
+    "PersonCreate schema: relationship_to_owner (str|None=None), is_deceased (bool=False), gedcom_id (str|None=None) — correct",
+    "PersonUpdate schema: relationship_to_owner (str|None=None), is_deceased (bool|None=None), gedcom_id (str|None=None) — is_deceased uses bool|None to avoid resetting on omission",
+    "PersonRead schema includes all three new fields with correct types (relationship_to_owner: str|None, is_deceased: bool, gedcom_id: str|None)",
+    "PersonDetailRead inherits from PersonRead and automatically gets new fields without modification",
+    "MemoryPersonRead, LinkPersonRequest unchanged — correct per plan scope",
+    "CheckConstraint import was already present (line 9) — no new imports needed",
+    "gedcom_id has unique=True constraint on the SQLModel field",
+    "relationship_to_owner has index=True for query performance",
+    "All 24 existing person tests pass without modification — no regressions",
+    "File content matches the plan's Full Target File State character-for-character",
+    "No migration code included — correctly deferred to A1.3",
+    "Router not modified — correctly deferred to A1.5",
+    "models/__init__.py already imports Person and MemoryPerson — no changes needed"
   ]
 }
 ```

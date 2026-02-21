@@ -31,6 +31,14 @@ class MemoryPerson(SQLModel, table=True):
 
 class Person(SQLModel, table=True):
     __tablename__ = "persons"
+    __table_args__ = (
+        CheckConstraint(
+            "relationship_to_owner IS NULL OR relationship_to_owner IN "
+            "('self', 'spouse', 'child', 'parent', 'sibling', 'grandparent', "
+            "'grandchild', 'aunt_uncle', 'cousin', 'in_law', 'friend', 'other')",
+            name="ck_persons_relationship_to_owner",
+        ),
+    )
 
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     name: str = Field(index=True)
@@ -38,6 +46,9 @@ class Person(SQLModel, table=True):
     name_dek: str | None = Field(default=None)
     immich_person_id: str | None = Field(default=None, unique=True)
     face_thumbnail_path: str | None = Field(default=None)
+    relationship_to_owner: str | None = Field(default=None, index=True)
+    is_deceased: bool = Field(default=False)
+    gedcom_id: str | None = Field(default=None, unique=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -50,12 +61,18 @@ class PersonCreate(BaseModel):
     name_encrypted: str | None = None
     name_dek: str | None = None
     immich_person_id: str | None = None
+    relationship_to_owner: str | None = None
+    is_deceased: bool = False
+    gedcom_id: str | None = None
 
 
 class PersonUpdate(BaseModel):
     name: str | None = None
     name_encrypted: str | None = None
     name_dek: str | None = None
+    relationship_to_owner: str | None = None
+    is_deceased: bool | None = None
+    gedcom_id: str | None = None
 
 
 class PersonRead(BaseModel):
@@ -65,6 +82,9 @@ class PersonRead(BaseModel):
     name_dek: str | None
     immich_person_id: str | None
     face_thumbnail_path: str | None
+    relationship_to_owner: str | None
+    is_deceased: bool
+    gedcom_id: str | None
     created_at: datetime
     updated_at: datetime
 
