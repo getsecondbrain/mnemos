@@ -1,12 +1,12 @@
-# Review Report — A2.1
+# Review Report — A2.2
 
 ## Verdict: PASS
 
 ## Runtime Checks
-- Build: PASS (py_compile succeeds)
-- Tests: PASS (test_rag.py 6/6 passed; test_search.py 46/47 passed — 1 pre-existing failure in TestVectorSearch::test_semantic_search_excludes_self confirmed by running on stashed clean state)
-- Lint: SKIPPED (neither ruff nor flake8 installed in local Python 3.14 environment)
-- Docker: PASS (docker compose config validates successfully; no compose file changes in this task)
+- Build: PASS (py_compile succeeded, module imports without error)
+- Tests: PASS (157 passed, 1 pre-existing failure in test_embedding.py unrelated to this task)
+- Lint: SKIPPED (ruff and flake8 not installed in host Python environment)
+- Docker: PASS (docker compose config validates without errors)
 
 ## Findings
 
@@ -14,21 +14,25 @@
 {
   "high": [],
   "medium": [],
-  "low": [
-    {"file": "backend/app/services/rag.py", "line": 75, "issue": "datetime.now() returns local time without timezone info. Acceptable for LLM prompt display (user's local date is more natural than UTC), but inconsistent with the rest of the codebase which uses datetime.now(timezone.utc) for stored timestamps.", "category": "inconsistency"},
-    {"file": "backend/app/services/rag.py", "line": 87, "issue": "When family_block is empty string, the template produces a blank line between the first line and 'You have access to...' paragraph. Harmless for LLM prompts and acknowledged in the plan as intentional.", "category": "style"}
-  ],
+  "low": [],
   "validated": [
-    "SYSTEM_PROMPT_TEMPLATE replaces old SYSTEM_PROMPT; no remaining references to old constant in codebase (grep confirmed)",
-    "__slots__ extended with 'owner_name' and 'family_context'; __init__ updated with keyword-only params with empty string defaults",
-    "_build_system_prompt method correctly builds prompt with owner preamble, date, family context, possessive, and context placeholders",
-    "Fallback behavior correct: empty owner_name produces 'a personal second brain' and 'their'; empty family_context produces no 'Family context:' line",
-    "query() at line 124 and stream_query() at line 171 both wired to use self._build_system_prompt(context) instead of old SYSTEM_PROMPT.format()",
-    "All 5 existing RAGService callers (chat.py:137, testament.py:557, dependencies.py:130, test_rag.py:70, test_search.py:122+1264) use defaults — no breakage",
-    "str.format() is safe: template placeholders match format() args exactly (5 named placeholders, 5 keyword args); values containing braces are not re-interpreted by str.format()",
-    "datetime import moved to module level (line 11) per plan instructions, not inside method",
-    "All 6 test_rag.py tests pass including test_context_passed_to_llm which verifies decrypted chunk text appears in the system prompt",
-    "All 46 non-pre-existing test_search.py tests pass including RAGPipeline and EndToEnd classes that exercise RAGService"
+    "File backend/app/services/owner_context.py exists and matches plan specification exactly",
+    "Function signature matches spec: get_owner_context(db_session: Session) -> tuple[str, str]",
+    "Uses db_session.get(OwnerProfile, 1) for singleton lookup — matches owner router pattern at owner.py:22",
+    "Returns ('', '') when no OwnerProfile exists (verified via in-memory SQLite test)",
+    "Returns ('', '') when OwnerProfile.name is empty string (verified via test)",
+    "Returns (owner_name, '') when no family members exist (verified via test)",
+    "WHERE clause correctly excludes: relationship_to_owner IS NULL, relationship_to_owner = 'self' (verified via test with 'self' and NULL persons excluded)",
+    "ORDER BY relationship_to_owner, name matches owner.py:84-91 family endpoint (verified via test with Alice/Zoe children ordering)",
+    "Deceased suffix format correct: 'Bob (parent, deceased)' — comma-space-deceased inside parentheses (verified via test)",
+    "Separator is '; ' (semicolon-space) as specified in plan",
+    "Uses 'from __future__ import annotations' per project convention",
+    "No unnecessary imports — only Session, select, OwnerProfile, Person",
+    "No hardcoded values that should be configurable",
+    "No resource leaks — stateless function, no file handles or connections opened",
+    "No security concerns — read-only DB queries with no user-controlled input",
+    "SQLAlchemy IS NOT NULL comparison uses != None with noqa: E711 comment (correct pattern)",
+    "Pre-existing test failure (test_embedding.py::TestSearchSimilar::test_returns_scored_chunks) is unrelated to this task"
   ]
 }
 ```
