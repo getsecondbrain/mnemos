@@ -231,7 +231,7 @@
 
 ## Phase 17: Owner Identity — Background AI Enrichment
 
-- [ ] A5.1: Add owner context to enrichment prompts. In `backend/app/worker.py`: add _cached_owner_name(self, engine) helper that reads OwnerProfile.name once per worker instance, prefix enrichment system prompt at line 1426 with "You are {name}'s memory assistant." when set. In `backend/app/services/connections.py` line 225: prefix connection discovery system prompt with owner name. In `backend/app/routers/memories.py` line 305: prefix reflection prompt with owner name if available.
+- [x] A5.1: Add owner context to enrichment prompts. In `backend/app/worker.py`: add _cached_owner_name(self, engine) helper that reads OwnerProfile.name once per worker instance, prefix enrichment system prompt at line 1426 with "You are {name}'s memory assistant." when set. In `backend/app/services/connections.py` line 225: prefix connection discovery system prompt with owner name. In `backend/app/routers/memories.py` line 305: prefix reflection prompt with owner name if available.
 
 ## Phase 18: Owner Identity — Tests
 
