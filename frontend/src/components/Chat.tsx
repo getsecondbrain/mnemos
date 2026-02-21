@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import { useAuthContext } from "../contexts/AuthContext";
-import type { ChatMessage } from "../types";
+import type { ChatMessage, Conversation } from "../types";
 
 const MAX_BACKOFF_MS = 30_000;   // 30 seconds max delay
 const BASE_DELAY_MS = 1_000;     // 1 second initial delay
@@ -12,6 +12,7 @@ export default function Chat() {
   const [isConnected, setIsConnected] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const { getAccessToken } = useAuthContext();
   const [isReconnecting, setIsReconnecting] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -49,6 +50,8 @@ export default function Chat() {
       // Reset reconnection state on successful connection
       reconnectAttemptRef.current = 0;
       setIsReconnecting(false);
+      // Reset conversation state for new connection
+      setConversations([]);
     };
 
     ws.onmessage = (event) => {
@@ -110,6 +113,31 @@ export default function Chat() {
           setError(typeof data.detail === "string" ? data.detail : "An error occurred");
           setIsStreaming(false);
           break;
+        case "title_update": {
+          const convId = typeof data.conversation_id === "string" ? data.conversation_id : "";
+          const newTitle = typeof data.title === "string" ? data.title : "";
+          if (convId && newTitle) {
+            setConversations((prev) => {
+              const existing = prev.find((c) => c.id === convId);
+              if (existing) {
+                return prev.map((c) =>
+                  c.id === convId ? { ...c, title: newTitle, updated_at: new Date().toISOString() } : c
+                );
+              }
+              // First time seeing this conversation — add it
+              return [
+                ...prev,
+                {
+                  id: convId,
+                  title: newTitle,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                },
+              ];
+            });
+          }
+          break;
+        }
       }
     };
 
@@ -211,7 +239,9 @@ export default function Chat() {
     <div className="h-full flex flex-col">
       {/* Connection status */}
       <div className="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-gray-800">
-        <h2 className="text-lg font-semibold text-gray-100">Chat</h2>
+        <h2 className="text-lg font-semibold text-gray-100 truncate">
+          {conversations[conversations.length - 1]?.title ?? "Chat"}
+        </h2>
         <div className="flex items-center gap-2">
           {isReconnecting ? (
             <>

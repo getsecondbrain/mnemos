@@ -140,7 +140,7 @@ export interface Connection {
 }
 
 /** WebSocket message types for chat */
-export type ChatMessageType = "auth" | "question" | "token" | "sources" | "done" | "error";
+export type ChatMessageType = "auth" | "question" | "token" | "sources" | "done" | "error" | "title_update";
 
 /** A single chat message in the UI */
 export interface ChatMessage {
@@ -149,6 +149,14 @@ export interface ChatMessage {
   content: string;
   sources?: string[];       // memory IDs cited
   isStreaming?: boolean;     // true while tokens are arriving
+}
+
+/** Matches backend ConversationRead schema */
+export interface Conversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Heartbeat alert record from backend */
