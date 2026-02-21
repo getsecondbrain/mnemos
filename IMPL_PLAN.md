@@ -219,7 +219,7 @@
 ## Phase 15: Owner Identity — GEDCOM Import
 
 - [x] A3.1: Add python-gedcom>=1.0,<2.0 dependency to `backend/requirements.txt`.
-- [ ] A3.2: Create GEDCOM import service (`backend/app/services/gedcom_import.py`). Define GedcomImportResult dataclass (persons_created/updated/skipped, families_processed, root_person_id, errors). Implement import_gedcom_file(file_path, db_session, owner_gedcom_id=None): parse .ged with gedcom.parser.Parser, extract IndividualElement records (name, birth/death), create/update Person records deduping by gedcom_id, extract FamilyElement records to compute relationships relative to owner (spouse via HUSB/WIFE, child via CHIL, parent, sibling via shared FAMC, grandparent/grandchild for 2 hops, "other" beyond).
+- [x] A3.2: Create GEDCOM import service (`backend/app/services/gedcom_import.py`). Define GedcomImportResult dataclass (persons_created/updated/skipped, families_processed, root_person_id, errors). Implement import_gedcom_file(file_path, db_session, owner_gedcom_id=None): parse .ged with gedcom.parser.Parser, extract IndividualElement records (name, birth/death), create/update Person records deduping by gedcom_id, extract FamilyElement records to compute relationships relative to owner (spouse via HUSB/WIFE, child via CHIL, parent, sibling via shared FAMC, grandparent/grandchild for 2 hops, "other" beyond).
 - [ ] A3.3: Wire GEDCOM upload endpoint in owner router (POST /api/owner/gedcom). Accept UploadFile + optional owner_gedcom_id query param, validate .ged extension, save to tmp, parse via import_gedcom_file, clean up temp file, return GedcomImportResult with counts and errors.
 
 ## Phase 16: Owner Identity — Frontend Settings UI

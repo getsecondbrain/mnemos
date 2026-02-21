@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlmodel import Session, select
 
+from app.config import get_settings
 from app.db import get_session
 from app.dependencies import require_auth
 from app.models.owner import OwnerProfile, OwnerProfileRead, OwnerProfileUpdate
 from app.models.person import Person, PersonRead
+from app.services.gedcom_import import import_gedcom_file, GedcomImportResult
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/owner", tags=["owner"])
@@ -100,8 +104,37 @@ async def upload_gedcom(
 ) -> dict:
     """Upload a GEDCOM file to import family tree data.
 
-    Full implementation in A3.3 — currently returns 501.
+    Parses the .ged file, creates/updates Person records, and computes
+    family relationships relative to the owner (if owner_gedcom_id provided).
     """
     if not file.filename or not file.filename.lower().endswith(".ged"):
         raise HTTPException(status_code=422, detail="File must be a .ged GEDCOM file")
-    raise HTTPException(status_code=501, detail="GEDCOM import not yet implemented")
+
+    settings = get_settings()
+    tmp_dir = settings.tmp_dir
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"gedcom_{uuid.uuid4().hex}.ged"
+
+    try:
+        contents = await file.read()
+        tmp_path.write_bytes(contents)
+    except Exception:
+        logger.exception("Failed to save uploaded GEDCOM file to temp storage")
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Failed to process GEDCOM file")
+
+    try:
+        result = import_gedcom_file(tmp_path, db, owner_gedcom_id)
+        logger.info(
+            "GEDCOM import: %d created, %d updated, %d skipped, %d errors",
+            result.persons_created,
+            result.persons_updated,
+            result.persons_skipped,
+            len(result.errors),
+        )
+        return asdict(result)
+    except Exception:
+        logger.exception("GEDCOM import failed unexpectedly")
+        raise HTTPException(status_code=500, detail="Failed to process GEDCOM file")
+    finally:
+        tmp_path.unlink(missing_ok=True)
