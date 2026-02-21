@@ -192,36 +192,29 @@ export default function Graph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-gray-400">Loading memory graph...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-red-400">{error}</p>
-      </div>
-    );
-  }
-
-  if (graphData.nodes.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-center">
-        <p className="text-gray-400 text-lg mb-2">No memories yet</p>
-        <p className="text-gray-500 text-sm">
-          Add memories to see the neural network grow.
-        </p>
-      </div>
-    );
-  }
+  const showGraph = !loading && !error && graphData.nodes.length > 0;
 
   return (
-    <div ref={containerRef} className="h-full w-full relative">
-      <ForceGraph2D
+    <div ref={containerRef} className="absolute inset-0">
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center z-10">
+          <p className="text-gray-400">Loading memory graph...</p>
+        </div>
+      )}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center z-10">
+          <p className="text-red-400">{error}</p>
+        </div>
+      )}
+      {!loading && !error && graphData.nodes.length === 0 && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-center z-10">
+          <p className="text-gray-400 text-lg mb-2">No memories yet</p>
+          <p className="text-gray-500 text-sm">
+            Add memories to see the neural network grow.
+          </p>
+        </div>
+      )}
+      {showGraph && <ForceGraph2D
         ref={graphRef}
         graphData={graphData}
         nodeId="id"
@@ -284,10 +277,10 @@ export default function Graph() {
         backgroundColor="#030712"
         width={dimensions.width}
         height={dimensions.height}
-      />
+      />}
 
       {/* Connection explanation tooltip */}
-      {tooltip && (
+      {showGraph && tooltip && (
         <div
           className="absolute z-50 max-w-sm bg-gray-800 border border-gray-700 rounded-lg p-4 shadow-xl"
           style={{
@@ -320,7 +313,7 @@ export default function Graph() {
       )}
 
       {/* Legend */}
-      <div className="absolute bottom-4 left-4 bg-gray-900/80 backdrop-blur-sm rounded-lg p-3 text-xs">
+      {showGraph && <div className="absolute bottom-4 left-4 bg-gray-900/80 backdrop-blur-sm rounded-lg p-3 text-xs">
         <p className="text-gray-400 font-semibold mb-2">Nodes</p>
         <div className="space-y-1 mb-3">
           {Object.entries(NODE_COLORS)
@@ -349,7 +342,7 @@ export default function Graph() {
               </div>
             ))}
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

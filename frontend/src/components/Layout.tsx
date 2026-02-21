@@ -136,7 +136,7 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
       {/* Mobile filter trigger + sheet */}
       <FilterPanel filters={filters} onFilterChange={setFilters} variant="mobile" tagData={tagData} personData={personData} />
 
-      <main className="flex-1 overflow-y-auto p-4 md:p-6">
+      <main className={`flex-1 ${location.pathname === "/graph" ? "relative overflow-hidden" : "overflow-y-auto p-4 md:p-6"}`}>
         <Outlet context={{ filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation, tagData, personData } satisfies LayoutOutletContext} />
       </main>
     </div>
