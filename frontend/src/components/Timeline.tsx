@@ -282,6 +282,7 @@ export default function Timeline() {
   const [timelineStats, setTimelineStats] = useState<TimelineStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState<{ memoryId: string; memory?: Memory } | null>(null);
+  const [sortBy, setSortBy] = useState<"captured_at" | "created_at">("captured_at");
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -372,7 +373,7 @@ export default function Timeline() {
   useEffect(() => {
     loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.contentTypes.join(","), filters.dateFrom, filters.dateTo, filters.tagIds.join(","), filters.personIds.join(","), filters.visibility, filters.near]);
+  }, [filters.contentTypes.join(","), filters.dateFrom, filters.dateTo, filters.tagIds.join(","), filters.personIds.join(","), filters.visibility, filters.near, sortBy]);
 
   async function loadInitial(options?: { background?: boolean }) {
     // Cancel any in-flight loadInitial request to prevent race conditions
@@ -397,7 +398,7 @@ export default function Timeline() {
         person_ids: filters.personIds.length > 0 ? filters.personIds : undefined,
         date_from: filters.dateFrom ?? undefined,
         date_to: filters.dateTo ?? undefined,
-        order_by: "captured_at",
+        order_by: sortBy,
         visibility: filters.visibility,
         near: filters.near ?? undefined,
       });
@@ -474,7 +475,7 @@ export default function Timeline() {
         person_ids: filters.personIds.length > 0 ? filters.personIds : undefined,
         date_from: filters.dateFrom ?? undefined,
         date_to: filters.dateTo ?? undefined,
-        order_by: "captured_at",
+        order_by: sortBy,
         visibility: filters.visibility,
         near: filters.near ?? undefined,
       });
@@ -612,6 +613,28 @@ export default function Timeline() {
     <div>
       <div className="flex items-center gap-3 mb-6">
         <h2 className="text-2xl font-bold text-gray-100">Timeline</h2>
+        <div className="flex items-center bg-gray-800 rounded-lg p-0.5 text-sm">
+          <button
+            onClick={() => setSortBy("captured_at")}
+            className={`px-2.5 py-1 rounded-md transition-colors ${
+              sortBy === "captured_at"
+                ? "bg-gray-700 text-gray-100"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            Chronological
+          </button>
+          <button
+            onClick={() => setSortBy("created_at")}
+            className={`px-2.5 py-1 rounded-md transition-colors ${
+              sortBy === "created_at"
+                ? "bg-gray-700 text-gray-100"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            Recently Added
+          </button>
+        </div>
         <button
           onClick={handleRefresh}
           disabled={refreshing}
