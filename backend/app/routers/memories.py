@@ -294,7 +294,7 @@ async def reflect_on_memory(
     year = memory.captured_at.year
 
     # 6. Call LLM (local Ollama only — no fallback configured)
-    owner_name, _ = get_owner_context(session)
+    owner_name, _, _ = get_owner_context(session)
     owner_prefix = f"You are {owner_name}'s memory assistant. " if owner_name else ""
     system_prompt = (
         f"{owner_prefix}"

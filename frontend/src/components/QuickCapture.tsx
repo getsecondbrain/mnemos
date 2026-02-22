@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent, type DragEvent as ReactDragEvent } from "react";
-import { createMemory, createTag, addTagsToMemory, uploadFileWithProgress, ingestUrl, fetchImmichThumbnail } from "../services/api";
+import { createMemory, createTag, addTagsToMemory, uploadFileWithProgress, ingestUrl, fetchImmichThumbnail, fetchImmichOriginal } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
@@ -350,6 +350,15 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
         setTitle("");
         setContent("");
         setSelectedTags([]);
+      }
+
+      // Download and attach Immich photo if present
+      if (prefill?.immichAssetId && parentIdRef.current) {
+        setUploadProgress("Downloading photo from Immich...");
+        const { blob, filename } = await fetchImmichOriginal(prefill.immichAssetId);
+        const file = new File([blob], filename, { type: blob.type || "image/jpeg" });
+        setUploadProgress(`Uploading ${filename}...`);
+        await uploadFileWithProgress(file, undefined, undefined, parentIdRef.current);
       }
 
       const remaining = [...attachments];

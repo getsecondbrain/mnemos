@@ -326,6 +326,30 @@ class ImmichService:
             content_type = resp.headers.get("content-type", "image/jpeg")
             return resp.content, content_type
 
+    async def get_asset_original(self, asset_id: str) -> tuple[bytes, str, str]:
+        """Download the original asset file from Immich.
+
+        Returns (file_bytes, content_type, filename).
+        Raises on failure.
+        """
+        safe_id = _validate_id(asset_id)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.get(
+                f"{self._base_url}/api/assets/{safe_id}/original",
+                headers={"x-api-key": self._api_key},
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            # Extract filename from Content-Disposition or fall back
+            filename = f"{safe_id}.jpg"
+            cd = resp.headers.get("content-disposition", "")
+            if "filename=" in cd:
+                parts = cd.split("filename=")
+                if len(parts) > 1:
+                    filename = parts[1].strip().strip('"')
+            return resp.content, content_type, filename
+
     async def push_person_name(
         self, person_id: str, name: str, session: Session
     ) -> bool:

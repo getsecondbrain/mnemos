@@ -805,6 +805,27 @@ export async function fetchImmichThumbnail(assetId: string): Promise<Blob> {
   return res.blob();
 }
 
+export async function fetchImmichOriginal(assetId: string): Promise<{ blob: Blob; filename: string }> {
+  const headers: Record<string, string> = {};
+  const token = getAccessTokenFn?.();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(
+    `${BASE_URL}/immich/assets/${encodeURIComponent(assetId)}/original`,
+    { headers },
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, "Failed to fetch Immich original");
+  }
+  const cd = res.headers.get("Content-Disposition") ?? "";
+  let filename = `${assetId}.jpg`;
+  const match = cd.match(/filename="?([^"]+)"?/);
+  if (match?.[1]) filename = match[1];
+  const blob = await res.blob();
+  return { blob, filename };
+}
+
 // --- Geocoding (proxied through backend for Nominatim ToS compliance) -------
 
 export interface GeocodingSearchResult {

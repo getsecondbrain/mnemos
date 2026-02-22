@@ -66,3 +66,27 @@ async def asset_thumbnail(asset_id: str) -> Response:
         media_type=content_type,
         headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+@router.get(
+    "/assets/{asset_id}/original",
+    dependencies=[Depends(require_auth)],
+)
+async def asset_original(asset_id: str) -> Response:
+    """Proxy the original asset file from Immich."""
+    svc = _get_immich_service()
+    if svc is None:
+        raise HTTPException(status_code=404, detail="Immich not configured")
+    try:
+        file_bytes, content_type, filename = await svc.get_asset_original(asset_id)
+    except Exception:
+        logger.warning("Failed to fetch original for asset %s", asset_id, exc_info=True)
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return Response(
+        content=file_bytes,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_TEMPLATE = """You are the AI memory assistant for {owner_preamble}. Today is {today_date}.
 {family_block}
+{people_block}
 You have access to {possessive} memories, notes, documents, and life experiences. Answer questions
 based on the retrieved context below. If you don't have relevant memories, say so honestly.
 
@@ -52,7 +53,7 @@ class RAGResult:
 class RAGService:
     """Retrieval Augmented Generation pipeline over encrypted memories."""
 
-    __slots__ = ("embedding_service", "llm_service", "encryption_service", "db_session", "owner_name", "family_context")
+    __slots__ = ("embedding_service", "llm_service", "encryption_service", "db_session", "owner_name", "family_context", "people_summary")
 
     def __init__(
         self,
@@ -62,6 +63,7 @@ class RAGService:
         db_session: Session | None = None,
         owner_name: str = "",
         family_context: str = "",
+        people_summary: str = "",
     ) -> None:
         self.embedding_service = embedding_service
         self.llm_service = llm_service
@@ -69,6 +71,7 @@ class RAGService:
         self.db_session = db_session
         self.owner_name = owner_name
         self.family_context = family_context
+        self.people_summary = people_summary
 
     def _build_system_prompt(self, context: str) -> str:
         """Build the system prompt with owner context, date, and retrieved memories."""
@@ -82,14 +85,17 @@ class RAGService:
             possessive = "their"
 
         if self.family_context:
-            family_block = f"Family context: {self.family_context}."
+            family_block = f"Close family: {self.family_context}."
         else:
             family_block = ""
+
+        people_block = self.people_summary if self.people_summary else ""
 
         return SYSTEM_PROMPT_TEMPLATE.format(
             owner_preamble=owner_preamble,
             today_date=today_date,
             family_block=family_block,
+            people_block=people_block,
             possessive=possessive,
             context=context,
         )

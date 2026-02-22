@@ -251,7 +251,7 @@ async def chat_websocket(
         await websocket.close(code=4003)
         return
 
-    owner_name, family_context = get_owner_context(db_session)
+    owner_name, family_context, people_summary = get_owner_context(db_session)
 
     rag_service = RAGService(
         embedding_service=embedding_service,
@@ -260,6 +260,7 @@ async def chat_websocket(
         db_session=db_session,
         owner_name=owner_name,
         family_context=family_context,
+        people_summary=people_summary,
     )
 
     # --- Create conversation record ---
