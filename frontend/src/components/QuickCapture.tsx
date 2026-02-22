@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent, type DragEvent as ReactDragEvent } from "react";
-import { createMemory, createTag, addTagsToMemory, uploadFileWithProgress, ingestUrl } from "../services/api";
+import { createMemory, createTag, addTagsToMemory, uploadFileWithProgress, ingestUrl, fetchImmichThumbnail } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { bufferToHex } from "../services/crypto";
 import TagInput from "./TagInput";
@@ -15,7 +15,7 @@ interface AttachedFile {
 
 interface QuickCaptureProps {
   onMemoryCreated: () => void;
-  prefill?: { title: string; content: string } | null;
+  prefill?: { title: string; content: string; immichAssetId?: string } | null;
 }
 
 type VoiceState = "idle" | "requesting" | "recording" | "recorded";
@@ -52,6 +52,9 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
   const dismissedRef = useRef(false);
   const [showVoicePanel, setShowVoicePanel] = useState(false);
 
+  // Immich thumbnail preview
+  const [immichThumbUrl, setImmichThumbUrl] = useState<string | null>(null);
+
   // URL import state
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlValue, setUrlValue] = useState("");
@@ -78,6 +81,24 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
       setExpanded(true);
     }
   }, [prefill]);
+
+  useEffect(() => {
+    if (!prefill?.immichAssetId) {
+      setImmichThumbUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+      return;
+    }
+    let revoked = false;
+    fetchImmichThumbnail(prefill.immichAssetId)
+      .then((blob) => {
+        if (revoked) return;
+        setImmichThumbUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => {});
+    return () => {
+      revoked = true;
+      setImmichThumbUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    };
+  }, [prefill?.immichAssetId]);
 
   // ---- Tag helpers ----
 
@@ -381,6 +402,8 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
     setUrlValue("");
     setUrlStatus("idle");
     setUrlError(null);
+    if (immichThumbUrl) URL.revokeObjectURL(immichThumbUrl);
+    setImmichThumbUrl(null);
   }
 
   // ---- Drag-and-drop ----
@@ -522,6 +545,18 @@ export default function QuickCapture({ onMemoryCreated, prefill }: QuickCaptureP
         </div>
       )}
       <form onSubmit={handleSubmit} className="space-y-3">
+        {immichThumbUrl && (
+          <div className="relative">
+            <img
+              src={immichThumbUrl}
+              alt=""
+              className="w-full max-h-48 object-cover rounded-md"
+            />
+            <span className="absolute top-2 right-2 text-[10px] bg-purple-900/80 text-purple-300 px-1.5 py-0.5 rounded font-medium">
+              Immich photo
+            </span>
+          </div>
+        )}
         <input
           type="text"
           value={title}

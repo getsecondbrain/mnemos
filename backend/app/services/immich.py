@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy.exc import IntegrityError
@@ -43,14 +45,23 @@ class SyncFacesResult:
     errors: int = 0
 
 
+@dataclass
+class _CacheEntry:
+    data: list[dict]
+    expires_at: float
+
+
 class ImmichService:
     """Sync people and face data between Immich and Mnemos."""
+
+    _MEMORIES_CACHE_TTL = 300.0  # 5 minutes
 
     def __init__(self, settings: Settings) -> None:
         self._base_url = settings.immich_url.rstrip("/")
         self._api_key = settings.immich_api_key
         self._timeout = 30.0
         self._thumbnails_dir = settings.data_dir / "immich_thumbnails"
+        self._memories_cache: _CacheEntry | None = None
 
     async def _get(
         self, path: str, params: dict[str, str] | None = None
@@ -60,6 +71,15 @@ class ImmichService:
             return await client.get(
                 f"{self._base_url}{path}",
                 params=params,
+                headers={"x-api-key": self._api_key, "Accept": "application/json"},
+            )
+
+    async def _post(self, path: str, json: dict) -> httpx.Response:
+        """Make an authenticated POST request to Immich API."""
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            return await client.post(
+                f"{self._base_url}{path}",
+                json=json,
                 headers={"x-api-key": self._api_key, "Accept": "application/json"},
             )
 
@@ -229,6 +249,82 @@ class ImmichService:
 
         session.commit()
         return result
+
+    async def get_on_this_day_memories(self) -> list[dict]:
+        """Search Immich for photos taken on this day in previous years.
+
+        Uses the search/metadata API to find photos matching today's month/day
+        across all previous years. Returns list of dicts with: asset_id,
+        file_created_at, original_file_name, description, city, years_ago.
+        """
+        now = time.monotonic()
+        if self._memories_cache and now < self._memories_cache.expires_at:
+            return self._memories_cache.data
+
+        today = datetime.now(timezone.utc)
+        month = today.month
+        day = today.day
+        assets: list[dict] = []
+
+        # Search each previous year going back up to 30 years
+        for years_back in range(1, 31):
+            year = today.year - years_back
+            try:
+                resp = await self._post("/api/search/metadata", json={
+                    "page": 1,
+                    "size": 20,
+                    "takenAfter": f"{year}-{month:02d}-{day:02d}T00:00:00.000Z",
+                    "takenBefore": f"{year}-{month:02d}-{day:02d}T23:59:59.999Z",
+                })
+                resp.raise_for_status()
+            except Exception:
+                logger.warning(
+                    "Failed to search Immich for year %d", year, exc_info=True
+                )
+                continue
+
+            data = resp.json()
+            items = data.get("assets", {}).get("items", [])
+            for asset in items:
+                asset_id = asset.get("id")
+                if not asset_id:
+                    continue
+                try:
+                    _validate_id(asset_id)
+                except ValueError:
+                    continue
+
+                file_created_at = asset.get("fileCreatedAt", "")
+                exif = asset.get("exifInfo") or {}
+                assets.append({
+                    "asset_id": asset_id,
+                    "file_created_at": file_created_at,
+                    "original_file_name": asset.get("originalFileName", ""),
+                    "description": exif.get("description") or None,
+                    "city": exif.get("city") or None,
+                    "years_ago": years_back,
+                })
+
+        self._memories_cache = _CacheEntry(
+            data=assets, expires_at=now + self._MEMORIES_CACHE_TTL
+        )
+        return assets
+
+    async def get_asset_thumbnail(self, asset_id: str) -> tuple[bytes, str]:
+        """Download an asset thumbnail from Immich.
+
+        Returns (image_bytes, content_type).
+        Raises on failure.
+        """
+        safe_id = _validate_id(asset_id)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base_url}/api/assets/{safe_id}/thumbnail",
+                headers={"x-api-key": self._api_key},
+            )
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return resp.content, content_type
 
     async def push_person_name(
         self, person_id: str, name: str, session: Session

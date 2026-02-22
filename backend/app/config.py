@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     enrich_interval_hours: int = 24
     connection_rescan_interval_hours: int = 6
     digest_interval_hours: int = 168  # Weekly
+    person_autolink_interval_hours: int = 12
 
     # Immich integration (self-hosted photo manager)
     immich_url: str = ""          # e.g. "http://immich:2283" or "https://photos.example.com"

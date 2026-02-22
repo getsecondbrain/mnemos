@@ -1164,6 +1164,9 @@ export default function MemoryDetail() {
   const photoChildren = allChildren.filter((c) => c.content_type === "photo");
   const nonPhotoChildren = allChildren.filter((c) => c.content_type !== "photo");
   const hasPhotoChildren = photoChildren.length > 0;
+  const isSinglePhoto = !hasPhotoChildren && memory.content_type === "photo" && !!imageUrl;
+  const isDocument = memory.content_type === "document";
+  const hasMedia = hasPhotoChildren || isSinglePhoto || isDocument;
 
   const dropOverlay = draggingOver && (
     <div className="absolute inset-0 z-20 rounded-lg border-2 border-dashed border-blue-500 bg-blue-500/10 flex items-center justify-center pointer-events-none">
@@ -1400,8 +1403,147 @@ export default function MemoryDetail() {
     </>
   );
 
-  // Two-panel layout for memories with photo children
-  if (hasPhotoChildren) {
+  // Build media panel for the left side of two-panel layout
+  const mediaPanel = hasPhotoChildren ? (
+    <ChildPhotoCarousel
+      children={photoChildren}
+      onDelete={async (childId) => {
+        await deleteMemory(childId);
+        if (id) {
+          try { await loadMemory(id); } catch { /* reload best-effort */ }
+        }
+      }}
+    />
+  ) : isSinglePhoto ? (
+    <div className="bg-black rounded-lg flex items-center justify-center min-h-[300px]">
+      <img
+        src={imageUrl!}
+        alt={displayTitle}
+        className="max-w-full max-h-[70vh] object-contain"
+      />
+    </div>
+  ) : isDocument ? (
+    <div className="min-h-[300px]">
+      {documentUrl ? (
+        <>
+          <iframe
+            src={`${documentUrl}#toolbar=1`}
+            title="Document viewer"
+            className="w-full h-[600px] rounded-lg border border-gray-700"
+          />
+          <p className="mt-1 text-xs text-gray-500">
+            PDF not displaying?{" "}
+            <a
+              href={documentUrl}
+              download="document.pdf"
+              className="text-blue-400 hover:text-blue-300 underline"
+            >
+              Download it instead
+            </a>
+          </p>
+          <div className="mt-3 flex gap-3">
+            <button
+              onClick={async () => {
+                if (!memory.source_id) return;
+                try {
+                  const isPdfOriginal = sourceMeta?.mime_type === "application/pdf";
+                  if (isPdfOriginal && documentUrl) {
+                    const a = document.createElement("a");
+                    a.href = documentUrl;
+                    a.download = `${memory.source_id}.pdf`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    return;
+                  }
+                  const blob = await fetchVaultFile(memory.source_id);
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = sourceMeta
+                    ? `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`
+                    : `${memory.source_id}`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                } catch {
+                  alert("Failed to download the original file. Please try again.");
+                }
+              }}
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-md transition-colors border border-gray-700"
+            >
+              Download Original
+            </button>
+          </div>
+        </>
+      ) : documentLoading ? (
+        <div className="flex items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
+          <p className="text-gray-400">Loading document viewer...</p>
+        </div>
+      ) : documentError ? (
+        <div className="flex flex-col items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
+          <p className="text-gray-400 mb-3">
+            Failed to load document preview.
+          </p>
+          {memory.source_id && (
+            <button
+              onClick={async () => {
+                try {
+                  const blob = await fetchVaultFile(memory.source_id!);
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = sourceMeta
+                    ? `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`
+                    : `${memory.source_id}`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                } catch {
+                  alert("Failed to download the original file. Please try again.");
+                }
+              }}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
+            >
+              Download Original
+            </button>
+          )}
+        </div>
+      ) : sourceMeta ? (
+        <div className="flex flex-col items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
+          <p className="text-gray-400 mb-3">
+            No inline preview available for this document type.
+          </p>
+          <button
+            onClick={async () => {
+              if (!memory.source_id) return;
+              try {
+                const blob = await fetchVaultFile(memory.source_id);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              } catch {
+                alert("Failed to download the original file. Please try again.");
+              }
+            }}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
+          >
+            Download Original
+          </button>
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
+  // Two-panel layout for any memory with visual media
+  if (hasMedia) {
     return (
       <div className="max-w-6xl mx-auto relative" {...dragProps}>
         {dropOverlay}
@@ -1413,30 +1555,14 @@ export default function MemoryDetail() {
         </Link>
 
         <div className="mt-4 flex flex-col lg:flex-row gap-6">
-          {/* Left panel — Photo carousel (60%) */}
-          <div className="lg:w-[60%]">
-            <ChildPhotoCarousel
-              children={photoChildren}
-              onDelete={async (childId) => {
-                await deleteMemory(childId);
-                if (id) {
-                  try { await loadMemory(id); } catch { /* reload best-effort */ }
-                }
-              }}
-            />
-          </div>
-
-          {/* Right panel — Content (40%) */}
-          <div className="lg:w-[40%]">
-            {contentPanel}
-          </div>
+          <div className="lg:w-[60%]">{mediaPanel}</div>
+          <div className="lg:w-[40%]">{contentPanel}</div>
         </div>
-
       </div>
     );
   }
 
-  // Single-column layout for memories without photo children
+  // Text-only: single column, no media
   return (
     <div className="max-w-2xl mx-auto relative" {...dragProps}>
       {dropOverlay}
@@ -1447,147 +1573,7 @@ export default function MemoryDetail() {
         Back to Timeline
       </Link>
 
-      <div className="mt-4">
-        {/* Photo preview */}
-        {memory.content_type === "photo" && imageUrl && (
-          <div className="mb-6">
-            <img
-              src={imageUrl}
-              alt={displayTitle}
-              className="max-w-full rounded-lg border border-gray-700"
-            />
-          </div>
-        )}
-
-        {/* Document viewer */}
-        {memory.content_type === "document" && (
-          <div className="mt-6">
-            {documentUrl ? (
-              <>
-                <iframe
-                  src={`${documentUrl}#toolbar=1`}
-                  title="Document viewer"
-                  className="w-full h-[600px] rounded-lg border border-gray-700"
-                />
-                {/* Fallback link in case browser cannot render PDF inline */}
-                <p className="mt-1 text-xs text-gray-500">
-                  PDF not displaying?{" "}
-                  <a
-                    href={documentUrl}
-                    download="document.pdf"
-                    className="text-blue-400 hover:text-blue-300 underline"
-                  >
-                    Download it instead
-                  </a>
-                </p>
-                {/* Download Original button */}
-                <div className="mt-3 flex gap-3">
-                  <button
-                    onClick={async () => {
-                      if (!memory.source_id) return;
-                      try {
-                        // If the original is a PDF, reuse the already-loaded blob URL
-                        const isPdfOriginal = sourceMeta?.mime_type === "application/pdf";
-                        if (isPdfOriginal && documentUrl) {
-                          const a = document.createElement("a");
-                          a.href = documentUrl;
-                          a.download = `${memory.source_id}.pdf`;
-                          document.body.appendChild(a);
-                          a.click();
-                          document.body.removeChild(a);
-                          return;
-                        }
-                        // Non-PDF original (DOCX/DOC/RTF) — fetch original file
-                        const blob = await fetchVaultFile(memory.source_id);
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = sourceMeta
-                          ? `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`
-                          : `${memory.source_id}`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                      } catch {
-                        alert("Failed to download the original file. Please try again.");
-                      }
-                    }}
-                    className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-md transition-colors border border-gray-700"
-                  >
-                    Download Original
-                  </button>
-                </div>
-              </>
-            ) : documentLoading ? (
-              <div className="flex items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
-                <p className="text-gray-400">Loading document viewer...</p>
-              </div>
-            ) : documentError ? (
-              <div className="flex flex-col items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
-                <p className="text-gray-400 mb-3">
-                  Failed to load document preview.
-                </p>
-                {memory.source_id && (
-                  <button
-                    onClick={async () => {
-                      try {
-                        const blob = await fetchVaultFile(memory.source_id!);
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = sourceMeta
-                          ? `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`
-                          : `${memory.source_id}`;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                      } catch {
-                        alert("Failed to download the original file. Please try again.");
-                      }
-                    }}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
-                  >
-                    Download Original
-                  </button>
-                )}
-              </div>
-            ) : sourceMeta ? (
-              // Source metadata loaded but no viewable PDF available
-              <div className="flex flex-col items-center justify-center h-[200px] bg-gray-800 rounded-lg border border-gray-700">
-                <p className="text-gray-400 mb-3">
-                  No inline preview available for this document type.
-                </p>
-                <button
-                  onClick={async () => {
-                    if (!memory.source_id) return;
-                    try {
-                      const blob = await fetchVaultFile(memory.source_id);
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `${memory.source_id}${_mimeToExt(sourceMeta.mime_type)}`;
-                      document.body.appendChild(a);
-                      a.click();
-                      document.body.removeChild(a);
-                      URL.revokeObjectURL(url);
-                    } catch {
-                      alert("Failed to download the original file. Please try again.");
-                    }
-                  }}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors"
-                >
-                  Download Original
-                </button>
-              </div>
-            ) : null}
-          </div>
-        )}
-
-        {contentPanel}
-      </div>
-
+      <div className="mt-4">{contentPanel}</div>
     </div>
   );
 }

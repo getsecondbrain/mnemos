@@ -173,6 +173,8 @@ class LLMService:
             raise LLMError(f"Cannot connect to Ollama at {self.ollama_url}: {exc}") from exc
         except httpx.HTTPStatusError as exc:
             raise LLMError(f"Ollama returned HTTP {exc.response.status_code}: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise LLMError(f"Ollama request timed out after {self._timeout}s: {exc}") from exc
 
     async def _generate_openai(
         self, prompt: str, system: str | None, temperature: float
@@ -215,6 +217,8 @@ class LLMService:
             raise LLMError(f"Cannot connect to fallback LLM at {self._fallback_url}: {exc}") from exc
         except httpx.HTTPStatusError as exc:
             raise LLMError(f"Fallback LLM returned HTTP {exc.response.status_code}: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise LLMError(f"Fallback LLM request timed out after {self._timeout}s: {exc}") from exc
         except (KeyError, IndexError) as exc:
             raise LLMError(f"Unexpected response from fallback LLM: {exc}") from exc
 
@@ -259,8 +263,11 @@ class LLMService:
         if system is not None:
             payload["system"] = system
 
+        # Use a longer read timeout for streaming — Ollama may need to load the
+        # model into GPU memory before producing the first token.
+        stream_timeout = httpx.Timeout(self._timeout, read=max(self._timeout, 300.0))
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=stream_timeout) as client:
                 async with client.stream(
                     "POST", f"{self.ollama_url}/api/generate", json=payload,
                 ) as response:
@@ -275,6 +282,8 @@ class LLMService:
             raise LLMError(f"Cannot connect to Ollama at {self.ollama_url}: {exc}") from exc
         except httpx.HTTPStatusError as exc:
             raise LLMError(f"Ollama returned HTTP {exc.response.status_code}: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise LLMError(f"Ollama streaming timed out after {self._timeout}s: {exc}") from exc
 
     async def _stream_openai(
         self, prompt: str, system: str | None, temperature: float
@@ -318,6 +327,8 @@ class LLMService:
             raise LLMError(f"Cannot connect to fallback LLM at {self._fallback_url}: {exc}") from exc
         except httpx.HTTPStatusError as exc:
             raise LLMError(f"Fallback LLM returned HTTP {exc.response.status_code}: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            raise LLMError(f"Fallback LLM streaming timed out after {self._timeout}s: {exc}") from exc
 
     # ── health ───────────────────────────────────────────────────
 

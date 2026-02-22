@@ -22,6 +22,7 @@ class LoopScheduler:
             "connection_rescan": timedelta(hours=settings.connection_rescan_interval_hours),
             "digest": timedelta(hours=settings.digest_interval_hours),
             "immich_sync": timedelta(hours=settings.immich_sync_interval_hours),
+            "person_autolink": timedelta(hours=settings.person_autolink_interval_hours),
         }
 
     def initialize(self, engine) -> None:

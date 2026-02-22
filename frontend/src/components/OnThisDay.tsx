@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
-import { getOnThisDayMemories, getMemoryReflect, fetchVaultFile } from "../services/api";
+import {
+  getOnThisDayMemories,
+  getMemoryReflect,
+  fetchVaultFile,
+  getImmichOnThisDay,
+  fetchImmichThumbnail,
+} from "../services/api";
+import type { ImmichOnThisDayAsset } from "../services/api";
 import { useEncryption } from "../hooks/useEncryption";
 import { hexToBuffer } from "../services/crypto";
 import QuickCapture from "./QuickCapture";
@@ -52,16 +59,47 @@ function CardThumbnail({ sourceId }: { sourceId: string }) {
   );
 }
 
+function ImmichThumbnail({ assetId }: { assetId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let revoked = false;
+    fetchImmichThumbnail(assetId)
+      .then((blob) => {
+        if (revoked) return;
+        setUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => {});
+    return () => {
+      revoked = true;
+      setUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    };
+  }, [assetId]);
+
+  if (!url) return <div className="w-full h-32 bg-gray-700 rounded-t-lg" />;
+  return (
+    <img
+      src={url}
+      alt=""
+      className="w-full h-32 object-cover rounded-t-lg"
+    />
+  );
+}
+
 interface OnThisDayProps {
   onMemoryCreated: () => void;
 }
 
 export default function OnThisDay({ onMemoryCreated }: OnThisDayProps) {
   const [memories, setMemories] = useState<Memory[]>([]);
+  const [immichAssets, setImmichAssets] = useState<ImmichOnThisDayAsset[]>([]);
   const [prompts, setPrompts] = useState<Record<string, string>>({});
   const [dismissed, setDismissed] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [prefill, setPrefill] = useState<{ title: string; content: string } | null>(null);
+  const [prefill, setPrefill] = useState<{ title: string; content: string; immichAssetId?: string } | null>(null);
   const { decrypt } = useEncryption();
 
   // Check sessionStorage for dismissal
@@ -114,34 +152,47 @@ export default function OnThisDay({ onMemoryCreated }: OnThisDayProps) {
 
     async function load() {
       try {
-        const raw = await getOnThisDayMemories();
+        // Fetch Mnemos memories and Immich photos in parallel
+        const [mnemosResult, immichResult] = await Promise.allSettled([
+          getOnThisDayMemories(),
+          getImmichOnThisDay(),
+        ]);
+
         if (cancelled) return;
-        if (raw.length === 0) {
+
+        const raw = mnemosResult.status === "fulfilled" ? mnemosResult.value : [];
+        const immich = immichResult.status === "fulfilled" ? immichResult.value : [];
+
+        setImmichAssets(immich);
+
+        if (raw.length === 0 && immich.length === 0) {
           setLoading(false);
           return;
         }
 
-        // Decrypt titles and content
-        const decrypted = await decryptMemories(raw);
-        if (cancelled) return;
-        setMemories(decrypted);
-
-        // Fetch reflection prompts sequentially to avoid overwhelming Ollama
-        const promptMap: Record<string, string> = {};
-        for (const m of decrypted) {
+        if (raw.length > 0) {
+          // Decrypt titles and content
+          const decrypted = await decryptMemories(raw);
           if (cancelled) return;
-          try {
-            const { prompt } = await getMemoryReflect(m.id);
-            promptMap[m.id] = prompt;
-          } catch {
-            const fallback =
-              GENERIC_PROMPTS[Math.floor(Math.random() * GENERIC_PROMPTS.length)] ??
-              GENERIC_PROMPTS[0]!;
-            promptMap[m.id] = fallback;
+          setMemories(decrypted);
+
+          // Fetch reflection prompts sequentially to avoid overwhelming Ollama
+          const promptMap: Record<string, string> = {};
+          for (const m of decrypted) {
+            if (cancelled) return;
+            try {
+              const { prompt } = await getMemoryReflect(m.id);
+              promptMap[m.id] = prompt;
+            } catch {
+              const fallback =
+                GENERIC_PROMPTS[Math.floor(Math.random() * GENERIC_PROMPTS.length)] ??
+                GENERIC_PROMPTS[0]!;
+              promptMap[m.id] = fallback;
+            }
           }
+          if (cancelled) return;
+          setPrompts(promptMap);
         }
-        if (cancelled) return;
-        setPrompts(promptMap);
       } catch {
         // Silently fail — carousel just won't show
       } finally {
@@ -167,12 +218,27 @@ export default function OnThisDay({ onMemoryCreated }: OnThisDayProps) {
     });
   }
 
+  function handleImmichClick(asset: ImmichOnThisDayAsset) {
+    const dateStr = new Date(asset.file_created_at).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+    const name = asset.description || asset.original_file_name.replace(/\.[^.]+$/, "");
+    const location = asset.city ? ` in ${asset.city}` : "";
+    setPrefill({
+      title: name,
+      content: `Photo from ${dateStr}${location}.\n\n`,
+      immichAssetId: asset.asset_id,
+    });
+  }
+
   function handleMemoryCreated() {
     setPrefill(null);
     onMemoryCreated();
   }
 
-  if (dismissed || loading || memories.length === 0) return null;
+  if (dismissed || loading || (memories.length === 0 && immichAssets.length === 0)) return null;
 
   return (
     <section className="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
@@ -255,6 +321,35 @@ export default function OnThisDay({ onMemoryCreated }: OnThisDayProps) {
               )}
             </div>
           </div>
+        ))}
+        {immichAssets.map((a) => (
+          <button
+            key={`immich-${a.asset_id}`}
+            type="button"
+            onClick={() => handleImmichClick(a)}
+            className="snap-start shrink-0 w-72 bg-gray-800 border border-gray-700 rounded-lg overflow-hidden text-left hover:border-purple-500/60 hover:bg-gray-750 transition-colors cursor-pointer"
+          >
+            <ImmichThumbnail assetId={a.asset_id} />
+            <div className="p-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-blue-400 font-medium">
+                  {a.years_ago === 1 ? "1 year ago" : `${a.years_ago} years ago`}
+                </span>
+                <span className="text-[10px] bg-purple-900/60 text-purple-300 px-1.5 py-0.5 rounded font-medium">
+                  Immich
+                </span>
+              </div>
+              <h3 className="text-sm text-gray-100 font-medium mt-1 line-clamp-2">
+                {a.description || a.original_file_name}
+              </h3>
+              {a.city && (
+                <p className="text-xs text-gray-400 mt-1">{a.city}</p>
+              )}
+              <span className="mt-2 inline-block text-xs text-purple-400 font-medium">
+                Create memory
+              </span>
+            </div>
+          </button>
         ))}
       </div>
 

@@ -281,14 +281,14 @@ function CollapsibleSection({
 }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   return (
-    <div className="border-b border-gray-800">
+    <div className="border-b border-gray-800/60">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-gray-200 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-gray-200 hover:bg-gray-800/30 rounded transition-colors"
       >
         {title}
         <svg
-          className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`w-3.5 h-3.5 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -433,13 +433,13 @@ function FilterSections({
     <div>
       {/* Header with active count + clear */}
       {activeCount > 0 && (
-        <div className="flex items-center justify-between px-3 py-2">
-          <span className="bg-blue-600 text-white text-[10px] rounded-full px-1.5 py-0.5">
+        <div className="flex items-center justify-between px-3 py-2 bg-gray-800/20 rounded-md mx-1 mt-1">
+          <span className="bg-blue-600/90 text-white text-[10px] font-medium rounded-full px-2 py-0.5">
             {activeCount} active
           </span>
           <button
             onClick={() => onFilterChange(freshEmptyFilters())}
-            className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+            className="text-[10px] text-gray-500 hover:text-gray-300 hover:underline transition-colors"
           >
             Clear all
           </button>
@@ -450,13 +450,19 @@ function FilterSections({
       <CollapsibleSection title="Content Type" defaultOpen>
         <div className="space-y-1.5">
           {CONTENT_TYPES.map((ct) => (
-            <label key={ct.value} className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={filters.contentTypes.includes(ct.value)}
-                onChange={() => toggleContentType(ct.value)}
-                className="accent-blue-500 w-3.5 h-3.5 rounded bg-gray-800 border-gray-600"
-              />
+            <label key={ct.value} className="group flex items-center gap-2 cursor-pointer">
+              <span className="relative flex items-center justify-center shrink-0">
+                <input
+                  type="checkbox"
+                  checked={filters.contentTypes.includes(ct.value)}
+                  onChange={() => toggleContentType(ct.value)}
+                  className="peer sr-only"
+                />
+                <span className="w-4 h-4 rounded border border-gray-600 bg-gray-800 transition-colors peer-checked:bg-blue-600 peer-checked:border-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500/50 group-hover:border-gray-500" />
+                <svg className="absolute w-2.5 h-2.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+              </span>
               <span className="text-xs text-gray-300">{ct.label}</span>
             </label>
           ))}
@@ -475,7 +481,7 @@ function FilterSections({
               onChange={(e) =>
                 onFilterChange({ ...filters, dateFrom: e.target.value || null })
               }
-              className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full"
+              className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-md px-2.5 py-1.5 w-full focus:border-gray-600 focus:ring-1 focus:ring-gray-600 focus:outline-none transition-colors placeholder:text-gray-600"
               style={{ colorScheme: "dark" }}
             />
           </div>
@@ -488,7 +494,7 @@ function FilterSections({
               onChange={(e) =>
                 onFilterChange({ ...filters, dateTo: e.target.value || null })
               }
-              className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full"
+              className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-md px-2.5 py-1.5 w-full focus:border-gray-600 focus:ring-1 focus:ring-gray-600 focus:outline-none transition-colors placeholder:text-gray-600"
               style={{ colorScheme: "dark" }}
             />
           </div>
@@ -517,18 +523,24 @@ function FilterSections({
                 placeholder="Filter tags..."
                 value={tagSearch}
                 onChange={(e) => setTagSearch(e.target.value)}
-                className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full mb-2"
+                className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-md px-2.5 py-1.5 w-full mb-2 focus:border-gray-600 focus:ring-1 focus:ring-gray-600 focus:outline-none transition-colors placeholder:text-gray-600"
               />
             )}
             <div className="max-h-40 overflow-y-auto space-y-1.5">
               {filteredTags.map((tag) => (
-                <label key={tag.id} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.tagIds.includes(tag.id)}
-                    onChange={() => toggleTag(tag.id)}
-                    className="accent-blue-500 w-3.5 h-3.5 rounded bg-gray-800 border-gray-600"
-                  />
+                <label key={tag.id} className="group flex items-center gap-2 cursor-pointer">
+                  <span className="relative flex items-center justify-center shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={filters.tagIds.includes(tag.id)}
+                      onChange={() => toggleTag(tag.id)}
+                      className="peer sr-only"
+                    />
+                    <span className="w-4 h-4 rounded border border-gray-600 bg-gray-800 transition-colors peer-checked:bg-blue-600 peer-checked:border-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500/50 group-hover:border-gray-500" />
+                    <svg className="absolute w-2.5 h-2.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                    </svg>
+                  </span>
                   <span
                     className="w-2.5 h-2.5 rounded-full shrink-0"
                     style={{ backgroundColor: tag.color ?? "#6b7280" }}
@@ -565,18 +577,24 @@ function FilterSections({
                 placeholder="Filter people..."
                 value={personSearch}
                 onChange={(e) => setPersonSearch(e.target.value)}
-                className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full mb-2"
+                className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-md px-2.5 py-1.5 w-full mb-2 focus:border-gray-600 focus:ring-1 focus:ring-gray-600 focus:outline-none transition-colors placeholder:text-gray-600"
               />
             )}
             <div className="max-h-40 overflow-y-auto space-y-1.5">
               {filteredPersons.map((person) => (
-                <label key={person.id} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.personIds.includes(person.id)}
-                    onChange={() => togglePerson(person.id)}
-                    className="accent-blue-500 w-3.5 h-3.5 rounded bg-gray-800 border-gray-600"
-                  />
+                <label key={person.id} className="group flex items-center gap-2 cursor-pointer">
+                  <span className="relative flex items-center justify-center shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={filters.personIds.includes(person.id)}
+                      onChange={() => togglePerson(person.id)}
+                      className="peer sr-only"
+                    />
+                    <span className="w-4 h-4 rounded border border-gray-600 bg-gray-800 transition-colors peer-checked:bg-blue-600 peer-checked:border-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500/50 group-hover:border-gray-500" />
+                    <svg className="absolute w-2.5 h-2.5 text-white opacity-0 peer-checked:opacity-100 transition-opacity pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                    </svg>
+                  </span>
                   <PersonThumbnail personId={person.id} thumbnailPath={person.face_thumbnail_path} size={18} />
                   <span className="text-xs text-gray-300 truncate">{person.name}</span>
                 </label>
@@ -604,7 +622,7 @@ function FilterSections({
                   handleLocationSearch();
                 }
               }}
-              className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 flex-1"
+              className="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded-md px-2.5 py-1.5 flex-1 focus:border-gray-600 focus:ring-1 focus:ring-gray-600 focus:outline-none transition-colors placeholder:text-gray-600"
             />
             <button
               onClick={handleLocationSearch}
@@ -648,14 +666,18 @@ function FilterSections({
       <CollapsibleSection title="Visibility">
         <div className="space-y-1.5">
           {(["all", "public", "private"] as const).map((v) => (
-            <label key={v} className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name={radioGroupName}
-                checked={filters.visibility === v}
-                onChange={() => onFilterChange({ ...filters, visibility: v })}
-                className="accent-blue-500 w-3.5 h-3.5"
-              />
+            <label key={v} className="group flex items-center gap-2 cursor-pointer">
+              <span className="relative flex items-center justify-center shrink-0">
+                <input
+                  type="radio"
+                  name={radioGroupName}
+                  checked={filters.visibility === v}
+                  onChange={() => onFilterChange({ ...filters, visibility: v })}
+                  className="peer sr-only"
+                />
+                <span className="w-4 h-4 rounded-full border border-gray-600 bg-gray-800 transition-colors peer-checked:border-blue-600 peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500/50 group-hover:border-gray-500" />
+                <span className="absolute w-2 h-2 rounded-full bg-blue-600 opacity-0 peer-checked:opacity-100 transition-opacity pointer-events-none" />
+              </span>
               <span className="text-xs text-gray-300 capitalize">{v}</span>
             </label>
           ))}

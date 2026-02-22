@@ -11,7 +11,7 @@ import app.models  # noqa: F401 — register SQLModel tables
 
 from app.config import get_settings
 from app.db import create_db_and_tables
-from app.routers import admin, auth, backup, chat, cortex, export, geocoding, health, heartbeat, ingest, loop_settings, memories, owner, persons, search, suggestions, tags, testament, vault
+from app.routers import admin, auth, backup, chat, cortex, export, geocoding, health, heartbeat, immich, ingest, loop_settings, memories, owner, persons, search, suggestions, tags, testament, vault
 from app.worker import BackgroundWorker
 
 
@@ -250,3 +250,4 @@ app.include_router(owner.router)
 app.include_router(persons.router)
 app.include_router(persons.memory_persons_router)
 app.include_router(geocoding.router)
+app.include_router(immich.router)

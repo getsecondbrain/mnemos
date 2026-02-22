@@ -45,6 +45,7 @@ class JobType(str, Enum):
     CONNECTION_RESCAN = "connection_rescan"  # Periodic connection re-scan
     DIGEST = "digest"  # Weekly digest generation
     IMMICH_SYNC = "immich_sync"  # Periodic Immich people sync
+    PERSON_AUTOLINK = "person_autolink"  # Auto-link persons to memories by name
 
 
 @dataclass
@@ -274,6 +275,8 @@ class BackgroundWorker:
             self._process_digest(job.payload)
         elif job.job_type == JobType.IMMICH_SYNC:
             self._process_immich_sync(job.payload)
+        elif job.job_type == JobType.PERSON_AUTOLINK:
+            self._process_person_autolink_loop(job.payload)
         else:
             logger.warning("Unknown job type: %s", job.job_type)
 
@@ -401,6 +404,17 @@ class BackgroundWorker:
             except Exception:
                 logger.warning(
                     "Auto date extraction failed for memory %s",
+                    memory_id, exc_info=True,
+                )
+
+            # 7. Auto-link persons mentioned in memory text
+            try:
+                self._autolink_persons_for_memory(
+                    loop, memory_id, title_plaintext, plaintext, engine,
+                )
+            except Exception:
+                logger.warning(
+                    "Person auto-link failed for memory %s",
                     memory_id, exc_info=True,
                 )
 
@@ -1616,3 +1630,446 @@ class BackgroundWorker:
                 )
         finally:
             loop.close()
+
+    # ------------------------------------------------------------------
+    # Person Auto-Link
+    # ------------------------------------------------------------------
+
+    _RELATIONSHIP_KEYWORDS = re.compile(
+        r"\b(my\s+)?(mother|father|mom|dad|daughter|son|sister|brother|wife|husband"
+        r"|spouse|grandma|grandmother|grandpa|grandfather|granddad|granny|nana"
+        r"|aunt|uncle|cousin|niece|nephew|in-law|mother-in-law|father-in-law"
+        r"|son-in-law|daughter-in-law|brother-in-law|sister-in-law)\b",
+        re.IGNORECASE,
+    )
+
+    def _process_person_autolink_loop(self, payload: dict) -> None:
+        """Handle PERSON_AUTOLINK loop job: scan memories for person name mentions."""
+        job_id = payload.pop("_job_id", None)
+        attempt = payload.pop("_attempt", 1)
+        max_attempts = payload.pop("_max_attempts", self._settings.worker_max_retries)
+
+        job_id = self._persist_job(
+            job_type=JobType.PERSON_AUTOLINK.value,
+            payload=payload,
+            status=JobStatus.PROCESSING.value,
+            attempt=attempt, max_attempts=max_attempts, job_id=job_id,
+        )
+
+        # Check if this is a single-memory job (from ingest) or a loop job
+        single_memory_id = payload.get("memory_id")
+        session_id = payload.get("session_id")
+
+        # Get master key
+        if session_id:
+            master_key = auth_state.get_master_key(session_id)
+        else:
+            master_key = auth_state.get_any_active_key()
+
+        if master_key is None:
+            logger.warning("No active session for PERSON_AUTOLINK — skipping this cycle")
+            self._persist_job(
+                job_type=JobType.PERSON_AUTOLINK.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+            return
+
+        encryption_service = EncryptionService(master_key)
+        loop = asyncio.new_event_loop()
+
+        try:
+            engine = self._get_engine()
+
+            # Load person index once for the entire batch
+            person_index = self._load_person_index(engine)
+            if not person_index:
+                logger.info("PERSON_AUTOLINK: no persons in database, skipping")
+                self._persist_job(
+                    job_type=JobType.PERSON_AUTOLINK.value,
+                    payload=payload,
+                    status=JobStatus.SUCCEEDED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+                return
+
+            if single_memory_id:
+                memory_ids = [single_memory_id]
+            else:
+                memory_ids = self._find_person_unlinked_memory_ids(engine, limit=30)
+
+            if not memory_ids:
+                logger.info("PERSON_AUTOLINK: no unprocessed memories found")
+                self._persist_job(
+                    job_type=JobType.PERSON_AUTOLINK.value,
+                    payload=payload,
+                    status=JobStatus.SUCCEEDED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+                return
+
+            total_links = 0
+            for mem_id in memory_ids:
+                try:
+                    links = self._autolink_persons_for_memory(
+                        loop, mem_id, None, None, engine,
+                        encryption_service=encryption_service,
+                        person_index=person_index,
+                    )
+                    total_links += links
+                except Exception:
+                    logger.warning(
+                        "PERSON_AUTOLINK failed for memory %s", mem_id, exc_info=True
+                    )
+
+            logger.info(
+                "PERSON_AUTOLINK: processed %d memories, created %d links",
+                len(memory_ids), total_links,
+            )
+
+            self._persist_job(
+                job_type=JobType.PERSON_AUTOLINK.value,
+                payload=payload,
+                status=JobStatus.SUCCEEDED.value,
+                attempt=attempt, max_attempts=max_attempts,
+                completed_at=datetime.now(timezone.utc), job_id=job_id,
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()
+            err_msg = str(exc)
+            logger.exception("Failed to process PERSON_AUTOLINK job")
+
+            if attempt >= max_attempts:
+                self._persist_job(
+                    job_type=JobType.PERSON_AUTOLINK.value,
+                    payload=payload,
+                    status=JobStatus.FAILED.value,
+                    attempt=attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    completed_at=datetime.now(timezone.utc), job_id=job_id,
+                )
+            else:
+                next_attempt = attempt + 1
+                delay = self._calculate_retry_delay(attempt)
+                retry_at = datetime.now(timezone.utc) + delay
+                self._persist_job(
+                    job_type=JobType.PERSON_AUTOLINK.value,
+                    payload=payload,
+                    status=JobStatus.PENDING.value,
+                    attempt=next_attempt, max_attempts=max_attempts,
+                    error_message=err_msg, error_traceback=tb,
+                    next_retry_at=retry_at, job_id=job_id,
+                )
+                logger.info(
+                    "Scheduled PERSON_AUTOLINK retry %d/%d at %s",
+                    next_attempt, max_attempts, retry_at.isoformat(),
+                )
+        finally:
+            loop.close()
+
+    def _find_person_unlinked_memory_ids(self, engine, limit: int = 30) -> list[str]:
+        """Find memory IDs that haven't been processed for person auto-linking.
+
+        Uses the metadata_json field — memories without a "person_autolink_at"
+        key are considered unprocessed.
+        """
+        from app.models.memory import Memory
+
+        with Session(engine) as session:
+            # Find memories where metadata_json is NULL or doesn't contain
+            # the person_autolink_at marker.
+            stmt = (
+                select(Memory.id)
+                .where(
+                    (Memory.metadata_json == None)  # noqa: E711
+                    | (~Memory.metadata_json.contains('"person_autolink_at"'))  # type: ignore[union-attr]
+                )
+                .where(Memory.deleted_at == None)  # noqa: E711
+                .order_by(Memory.created_at.desc())
+                .limit(limit)
+            )
+            results = session.exec(stmt).all()
+            return list(results)
+
+    def _load_person_index(
+        self, engine
+    ) -> list[tuple[str, str, str | None]]:
+        """Load all persons as (id, name, relationship_to_owner).
+
+        Excludes persons with names shorter than 3 chars and the 'self' person.
+        """
+        from app.models.person import Person
+
+        with Session(engine) as session:
+            stmt = select(Person.id, Person.name, Person.relationship_to_owner).where(
+                Person.name != None,  # noqa: E711
+                Person.name != "",
+            )
+            rows = session.exec(stmt).all()
+
+        result = []
+        for person_id, name, relationship in rows:
+            # Skip the owner themselves
+            if relationship == "self":
+                continue
+            # Skip very short names (too many false positives)
+            if len(name.strip()) < 3:
+                continue
+            result.append((person_id, name.strip(), relationship))
+        return result
+
+    def _string_match_persons(
+        self,
+        text: str,
+        person_index: list[tuple[str, str, str | None]],
+    ) -> list[tuple[str, float]]:
+        """Case-insensitive name matching against text.
+
+        Multi-word names get confidence=0.95, single-word names get 0.7.
+        Returns list of (person_id, confidence).
+        """
+        text_lower = text.lower()
+        matches: list[tuple[str, float]] = []
+
+        for person_id, name, _rel in person_index:
+            name_lower = name.lower()
+            # Use word boundary matching to avoid partial matches
+            # e.g. "Sean" should not match "Season"
+            pattern = r"\b" + re.escape(name_lower) + r"\b"
+            if re.search(pattern, text_lower):
+                # Multi-word names are higher confidence
+                is_multi_word = " " in name.strip()
+                confidence = 0.95 if is_multi_word else 0.7
+                matches.append((person_id, confidence))
+
+        return matches
+
+    def _llm_match_persons(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        title: str,
+        content: str,
+        person_index: list[tuple[str, str, str | None]],
+    ) -> list[tuple[str, float]]:
+        """Use LLM to match relationship-based references to persons.
+
+        Only called when relationship keywords are detected and persons
+        with relationship_to_owner are available.
+        Returns list of (person_id, confidence).
+        """
+        # Build person list for the prompt — only those with relationships
+        persons_with_rel = [
+            (pid, name, rel)
+            for pid, name, rel in person_index
+            if rel
+        ]
+        if not persons_with_rel:
+            return []
+
+        # Cap at 50 persons to keep prompt size manageable
+        persons_with_rel = persons_with_rel[:50]
+
+        person_list = "\n".join(
+            f"- {name} (id: {pid}, relationship: {rel})"
+            for pid, name, rel in persons_with_rel
+        )
+
+        content_preview = content[:500] if len(content) > 500 else content
+        prompt = (
+            f"Memory title: {title}\n"
+            f"Memory text: {content_preview}\n\n"
+            f"Known persons:\n{person_list}\n\n"
+            "Which of these persons are referenced in the memory text? "
+            "Include indirect references like 'my daughter', 'dad', etc. "
+            "Output ONLY a JSON array: [{\"person_id\": \"...\", \"confidence\": 0.8}]. "
+            "Empty array if none match."
+        )
+
+        try:
+            response = loop.run_until_complete(
+                self._llm_service.generate(
+                    prompt=prompt,
+                    system=(
+                        "You are a person identification assistant. Given memory text "
+                        "and a list of known persons with relationships, identify "
+                        "referenced persons. Output ONLY a JSON array: "
+                        '[{"person_id": "...", "confidence": 0.8}]. '
+                        "Empty array if none."
+                    ),
+                    temperature=0.2,
+                    local_only=True,
+                )
+            )
+        except Exception:
+            logger.warning("LLM person matching failed", exc_info=True)
+            return []
+
+        # Parse JSON response
+        raw = response.text.strip()
+        # Extract JSON array from response (LLM may add extra text)
+        array_match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if not array_match:
+            return []
+
+        try:
+            items = json.loads(array_match.group())
+        except (json.JSONDecodeError, ValueError):
+            logger.debug("PERSON_AUTOLINK: could not parse LLM response: %r", raw)
+            return []
+
+        matches: list[tuple[str, float]] = []
+        valid_ids = {pid for pid, _, _ in person_index}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            pid = item.get("person_id", "")
+            conf = item.get("confidence", 0.5)
+            if pid in valid_ids and isinstance(conf, (int, float)) and 0 < conf <= 1.0:
+                matches.append((pid, float(conf)))
+
+        return matches
+
+    def _autolink_persons_for_memory(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        memory_id: str,
+        title_plaintext: str | None,
+        content_plaintext: str | None,
+        engine,
+        encryption_service: EncryptionService | None = None,
+        person_index: list[tuple[str, str, str | None]] | None = None,
+    ) -> int:
+        """Orchestrate Phase A (string match) + Phase B (LLM) for one memory.
+
+        If title_plaintext/content_plaintext are provided (from ingest),
+        uses them directly. Otherwise decrypts from DB.
+
+        Returns the number of links created.
+        """
+        from sqlalchemy.exc import IntegrityError
+        from app.models.memory import Memory
+        from app.models.person import MemoryPerson
+
+        # --- Resolve encryption service if not provided ---
+        if encryption_service is None:
+            master_key = auth_state.get_any_active_key()
+            if master_key is None:
+                return 0
+            encryption_service = EncryptionService(master_key)
+
+        # --- Resolve person index if not provided ---
+        if person_index is None:
+            person_index = self._load_person_index(engine)
+        if not person_index:
+            return 0
+
+        # --- Get plaintext if not provided ---
+        if title_plaintext is None or content_plaintext is None:
+            from app.services.encryption import EncryptedEnvelope
+
+            with Session(engine) as session:
+                memory = session.get(Memory, memory_id)
+                if memory is None:
+                    return 0
+                mem_title = memory.title
+                mem_content = memory.content
+                mem_title_dek = memory.title_dek
+                mem_content_dek = memory.content_dek
+
+            try:
+                if mem_title_dek:
+                    title_plaintext = encryption_service.decrypt(
+                        EncryptedEnvelope(
+                            ciphertext=bytes.fromhex(mem_title),
+                            encrypted_dek=bytes.fromhex(mem_title_dek),
+                            algo="aes-256-gcm", version=1,
+                        )
+                    ).decode("utf-8")
+                else:
+                    title_plaintext = mem_title or ""
+
+                if mem_content_dek:
+                    content_plaintext = encryption_service.decrypt(
+                        EncryptedEnvelope(
+                            ciphertext=bytes.fromhex(mem_content),
+                            encrypted_dek=bytes.fromhex(mem_content_dek),
+                            algo="aes-256-gcm", version=1,
+                        )
+                    ).decode("utf-8")
+                else:
+                    content_plaintext = mem_content or ""
+            except Exception:
+                logger.warning(
+                    "PERSON_AUTOLINK: decryption failed for memory %s",
+                    memory_id, exc_info=True,
+                )
+                return 0
+
+        # --- Phase A: String matching ---
+        full_text = f"{title_plaintext} {content_plaintext}"
+        matches = self._string_match_persons(full_text, person_index)
+        matched_ids = {pid for pid, _ in matches}
+
+        # --- Phase B: LLM relationship matching (only when needed) ---
+        has_relationship_keywords = bool(self._RELATIONSHIP_KEYWORDS.search(full_text))
+        persons_with_relationships = any(rel for _, _, rel in person_index)
+
+        if has_relationship_keywords and persons_with_relationships and len(matches) < 3:
+            llm_matches = self._llm_match_persons(
+                loop, title_plaintext, content_plaintext, person_index
+            )
+            # Merge LLM matches (don't override string matches — they're higher confidence)
+            for pid, conf in llm_matches:
+                if pid not in matched_ids:
+                    matches.append((pid, conf))
+                    matched_ids.add(pid)
+
+        # --- Create MemoryPerson links ---
+        links_created = 0
+        if matches:
+            with Session(engine) as session:
+                for person_id, confidence in matches:
+                    mp = MemoryPerson(
+                        memory_id=memory_id,
+                        person_id=person_id,
+                        source="auto",
+                        confidence=confidence,
+                    )
+                    nested = session.begin_nested()
+                    try:
+                        session.add(mp)
+                        session.flush()
+                        links_created += 1
+                    except IntegrityError:
+                        nested.rollback()
+                        # Link already exists — skip gracefully
+
+                session.commit()
+
+        if links_created:
+            logger.info(
+                "PERSON_AUTOLINK: created %d links for memory %s",
+                links_created, memory_id,
+            )
+
+        # --- Stamp metadata_json with person_autolink_at ---
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with Session(engine) as session:
+            memory = session.get(Memory, memory_id)
+            if memory is not None:
+                existing_meta = {}
+                if memory.metadata_json:
+                    try:
+                        existing_meta = json.loads(memory.metadata_json)
+                    except (json.JSONDecodeError, ValueError):
+                        existing_meta = {}
+                existing_meta["person_autolink_at"] = now_iso
+                memory.metadata_json = json.dumps(existing_meta)
+                session.add(memory)
+                session.commit()
+
+        return links_created

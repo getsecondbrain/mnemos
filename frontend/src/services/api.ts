@@ -774,6 +774,37 @@ export async function importGedcom(
   return res.json() as Promise<GedcomImportResult>;
 }
 
+// --- Immich endpoints --------------------------------------------------------
+
+export interface ImmichOnThisDayAsset {
+  asset_id: string;
+  file_created_at: string;
+  original_file_name: string;
+  description: string | null;
+  city: string | null;
+  years_ago: number;
+}
+
+export async function getImmichOnThisDay(): Promise<ImmichOnThisDayAsset[]> {
+  return request<ImmichOnThisDayAsset[]>("/immich/on-this-day");
+}
+
+export async function fetchImmichThumbnail(assetId: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getAccessTokenFn?.();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(
+    `${BASE_URL}/immich/assets/${encodeURIComponent(assetId)}/thumbnail`,
+    { headers },
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, "Failed to fetch Immich thumbnail");
+  }
+  return res.blob();
+}
+
 // --- Geocoding (proxied through backend for Nominatim ToS compliance) -------
 
 export interface GeocodingSearchResult {
