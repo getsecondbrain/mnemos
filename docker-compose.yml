@@ -43,8 +43,6 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s
@@ -70,26 +68,27 @@ services:
       start_period: 10s
     logging: *default-logging
 
-  ollama:
-    image: ollama/ollama:0.16.1
-    restart: unless-stopped
-    expose:
-      - "11434"
-    volumes:
-      - ./data/ollama:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/11434'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    # Uncomment for GPU passthrough (NVIDIA):
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-    logging: *default-logging
+  # Ollama runs on remote GPU server (bucky) at 100.86.138.79:11434 via Tailscale
+  # To restore local Ollama, uncomment below and change OLLAMA_URL in .env back to http://ollama:11434
+  # ollama:
+  #   image: ollama/ollama:0.16.1
+  #   restart: unless-stopped
+  #   expose:
+  #     - "11434"
+  #   volumes:
+  #     - ./data/ollama:/root/.ollama
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/11434'"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 10s
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   logging: *default-logging
 
