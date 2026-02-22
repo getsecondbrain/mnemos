@@ -140,7 +140,17 @@ export interface Connection {
 }
 
 /** WebSocket message types for chat */
-export type ChatMessageType = "auth" | "question" | "token" | "sources" | "done" | "error" | "title_update";
+export type ChatMessageType = "auth" | "question" | "token" | "sources" | "done" | "error" | "title_update" | "conversation_ready";
+
+/** Persistent chat message from backend */
+export interface ConversationMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources: string[] | null;
+  created_at: string;
+}
 
 /** A single chat message in the UI */
 export interface ChatMessage {

@@ -14,4 +14,4 @@ from app.models.reflection import ReflectionPrompt  # noqa: F401
 from app.models.suggestion import Suggestion, LoopState  # noqa: F401
 from app.models.person import Person, MemoryPerson  # noqa: F401
 from app.models.owner import OwnerProfile  # noqa: F401
-from app.models.conversation import Conversation  # noqa: F401
+from app.models.conversation import Conversation, ConversationMessage  # noqa: F401

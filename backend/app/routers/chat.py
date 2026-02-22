@@ -1,4 +1,4 @@
-"""Chat API — WebSocket endpoint for streaming RAG chat.
+"""Chat API — WebSocket endpoint for streaming RAG chat + REST history.
 
 Authenticates via an initial auth message carrying a JWT access token,
 then enters a message loop where the client sends questions and the
@@ -13,12 +13,18 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from sqlmodel import Session
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from sqlmodel import Session, col, select
 
 from app import auth_state
 from app.db import get_session
-from app.models.conversation import Conversation
+from app.dependencies import require_auth
+from app.models.conversation import (
+    Conversation,
+    ConversationMessage,
+    ConversationMessageRead,
+    ConversationRead,
+)
 from app.routers.auth import _decode_token
 from app.services.embedding import EmbeddingError, EmbeddingService
 from app.services.encryption import EncryptionService
@@ -31,10 +37,82 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
 
 
-async def _authenticate(websocket: WebSocket) -> str:
-    """Wait for the first message, validate JWT, and return session_id.
+# ---------------------------------------------------------------------------
+# REST endpoints
+# ---------------------------------------------------------------------------
 
-    Expected message format: {"type": "auth", "token": "<jwt_access_token>"}
+
+@router.get(
+    "/api/chat/conversations",
+    response_model=list[ConversationRead],
+)
+async def list_conversations(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    _session_id: str = Depends(require_auth),
+    db_session: Session = Depends(get_session),
+) -> list[Conversation]:
+    stmt = (
+        select(Conversation)
+        .order_by(col(Conversation.updated_at).desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    return list(db_session.exec(stmt).all())
+
+
+@router.get(
+    "/api/chat/conversations/{conversation_id}/messages",
+    response_model=list[ConversationMessageRead],
+)
+async def get_conversation_messages(
+    conversation_id: str,
+    _session_id: str = Depends(require_auth),
+    db_session: Session = Depends(get_session),
+) -> list[ConversationMessage]:
+    stmt = (
+        select(ConversationMessage)
+        .where(ConversationMessage.conversation_id == conversation_id)
+        .order_by(col(ConversationMessage.created_at).asc())
+    )
+    return list(db_session.exec(stmt).all())
+
+
+@router.delete(
+    "/api/chat/conversations/{conversation_id}",
+    status_code=204,
+)
+async def delete_conversation(
+    conversation_id: str,
+    _session_id: str = Depends(require_auth),
+    db_session: Session = Depends(get_session),
+) -> None:
+    # Delete messages first (FK constraint)
+    msgs = db_session.exec(
+        select(ConversationMessage).where(
+            ConversationMessage.conversation_id == conversation_id
+        )
+    ).all()
+    for msg in msgs:
+        db_session.delete(msg)
+
+    conv = db_session.get(Conversation, conversation_id)
+    if conv:
+        db_session.delete(conv)
+
+    db_session.commit()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket helpers
+# ---------------------------------------------------------------------------
+
+
+async def _authenticate(websocket: WebSocket) -> tuple[str, dict]:
+    """Wait for the first message, validate JWT, and return (session_id, auth_msg).
+
+    Expected message format: {"type": "auth", "token": "<jwt>", "conversation_id": "..."}
+    The conversation_id field is optional (for resuming existing conversations).
     Sends an error and closes with code 4001 on failure.
     """
     try:
@@ -71,7 +149,7 @@ async def _authenticate(websocket: WebSocket) -> str:
         await websocket.close(code=4001)
         raise WebSocketDisconnect(code=4001)
 
-    return session_id
+    return session_id, msg
 
 
 def _clean_title(raw: str) -> str:
@@ -96,10 +174,10 @@ async def _handle_question(
     rag_service: RAGService,
     text: str,
     top_k: int,
-) -> str:
+) -> tuple[str, list[str]]:
     """Run RAG stream_query and send tokens + sources + done to the client.
 
-    Returns the full accumulated assistant response text.
+    Returns (assistant_text, source_ids).
     """
     token_stream, source_ids = await rag_service.stream_query(text, top_k=top_k)
 
@@ -111,7 +189,7 @@ async def _handle_question(
     await websocket.send_json({"type": "sources", "memory_ids": source_ids})
     await websocket.send_json({"type": "done"})
 
-    return "".join(chunks)
+    return "".join(chunks), source_ids
 
 
 def _persist_exchange(
@@ -119,8 +197,9 @@ def _persist_exchange(
     conversation: Conversation,
     user_text: str,
     assistant_text: str,
+    source_ids: list[str],
 ) -> tuple[Conversation, bool]:
-    """Save exchange to conversation and return (conversation, needs_ai_title).
+    """Save exchange messages and return (conversation, needs_ai_title).
 
     Returns needs_ai_title=True when the conversation title is still the
     default "New conversation" — indicating the first exchange just completed
@@ -129,6 +208,24 @@ def _persist_exchange(
     needs_ai_title = conversation.title == "New conversation"
     conversation.updated_at = datetime.now(timezone.utc)
     db_session.add(conversation)
+
+    # Persist user message
+    user_msg = ConversationMessage(
+        conversation_id=conversation.id,
+        role="user",
+        content=user_text,
+    )
+    db_session.add(user_msg)
+
+    # Persist assistant message
+    assistant_msg = ConversationMessage(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=assistant_text,
+        sources=json.dumps(source_ids) if source_ids else None,
+    )
+    db_session.add(assistant_msg)
+
     db_session.commit()
     db_session.refresh(conversation)
     return conversation, needs_ai_title
@@ -202,6 +299,11 @@ async def _generate_title(
         )
 
 
+# ---------------------------------------------------------------------------
+# WebSocket endpoint
+# ---------------------------------------------------------------------------
+
+
 @router.websocket("/ws/chat")
 async def chat_websocket(
     websocket: WebSocket,
@@ -210,18 +312,18 @@ async def chat_websocket(
     """WebSocket endpoint for streaming RAG chat.
 
     Protocol:
-    1. Client connects and sends {"type": "auth", "token": "<jwt>"}
-    2. On success, enters message loop where client sends
-       {"type": "question", "text": "...", "top_k": 5}
-    3. Server streams {"type": "token", "text": "..."} messages
-    4. Server sends {"type": "sources", "memory_ids": [...]}
-    5. Server sends {"type": "done"}
+    1. Client connects and sends {"type": "auth", "token": "<jwt>", "conversation_id": "..."}
+    2. Server sends {"type": "conversation_ready", "conversation_id": "..."}
+    3. Client sends {"type": "question", "text": "...", "top_k": 5}
+    4. Server streams {"type": "token", "text": "..."} messages
+    5. Server sends {"type": "sources", "memory_ids": [...]}
+    6. Server sends {"type": "done"}
     """
     await websocket.accept()
 
     # --- Authenticate ---
     try:
-        session_id = await _authenticate(websocket)
+        session_id, auth_msg = await _authenticate(websocket)
     except WebSocketDisconnect:
         return
 
@@ -263,13 +365,24 @@ async def chat_websocket(
         people_summary=people_summary,
     )
 
-    # --- Create conversation record ---
-    conversation = Conversation()
-    db_session.add(conversation)
-    db_session.commit()
-    db_session.refresh(conversation)
+    # --- Resume or create conversation ---
+    requested_conv_id = auth_msg.get("conversation_id")
+    conversation = None
+    if requested_conv_id:
+        conversation = db_session.get(Conversation, requested_conv_id)
 
-    title_task_fired = False  # Guard to prevent duplicate title generation tasks
+    if conversation is None:
+        conversation = Conversation()
+        db_session.add(conversation)
+        db_session.commit()
+        db_session.refresh(conversation)
+
+    await websocket.send_json({
+        "type": "conversation_ready",
+        "conversation_id": conversation.id,
+    })
+
+    title_task_fired = conversation.title != "New conversation"
 
     # --- Message loop ---
     try:
@@ -295,13 +408,13 @@ async def chat_websocket(
             top_k = max(1, min(20, int(top_k)))
 
             try:
-                assistant_text = await _handle_question(
+                assistant_text, source_ids = await _handle_question(
                     websocket, rag_service, text, top_k
                 )
 
                 # Persist exchange and check if title generation is needed
                 conversation, needs_ai_title = _persist_exchange(
-                    db_session, conversation, text, assistant_text
+                    db_session, conversation, text, assistant_text, source_ids
                 )
 
                 # Fire title generation for first exchange

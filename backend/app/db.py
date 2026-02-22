@@ -65,6 +65,24 @@ def _run_migrations(eng) -> None:
                     text(f"ALTER TABLE memories ADD COLUMN {col_name} {col_def}")
                 )
 
+    # Conversation messages table
+    if "conversation_messages" not in insp.get_table_names():
+        with eng.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE conversation_messages ("
+                "  id TEXT PRIMARY KEY,"
+                "  conversation_id TEXT NOT NULL REFERENCES conversations(id),"
+                "  role TEXT NOT NULL,"
+                "  content TEXT NOT NULL,"
+                "  sources TEXT,"
+                "  created_at TEXT NOT NULL"
+                ")"
+            ))
+            conn.execute(text(
+                "CREATE INDEX ix_conversation_messages_conversation_id "
+                "ON conversation_messages(conversation_id)"
+            ))
+
     # Person model extensions (A1.2)
     person_cols = [c["name"] for c in insp.get_columns("persons")]
     for col_name, col_def in [

@@ -7,6 +7,8 @@ import type {
   IngestResponse,
   SearchResponse,
   Connection,
+  Conversation,
+  ConversationMessage,
   HeartbeatStatus,
   TestamentConfig,
   ShamirSplitResponse,
@@ -848,6 +850,34 @@ export async function geocodingReverse(
 ): Promise<{ display_name: string }> {
   const params = new URLSearchParams({ lat: String(lat), lng: String(lng) });
   return request<{ display_name: string }>(`/geocoding/reverse?${params}`);
+}
+
+// --- Chat history endpoints --------------------------------------------------
+
+export async function listConversations(params?: {
+  skip?: number;
+  limit?: number;
+}): Promise<Conversation[]> {
+  const query = new URLSearchParams();
+  if (params?.skip != null) query.set("skip", String(params.skip));
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return request<Conversation[]>(`/chat/conversations${qs ? `?${qs}` : ""}`);
+}
+
+export async function getConversationMessages(
+  conversationId: string,
+): Promise<ConversationMessage[]> {
+  return request<ConversationMessage[]>(
+    `/chat/conversations/${encodeURIComponent(conversationId)}/messages`,
+  );
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  return request<void>(
+    `/chat/conversations/${encodeURIComponent(conversationId)}`,
+    { method: "DELETE" },
+  );
 }
 
 // --- Health -----------------------------------------------------------------
