@@ -6,7 +6,6 @@ import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
 import Timeline from "./components/Timeline";
 import MemoryDetail from "./components/MemoryDetail";
-import Search from "./components/Search";
 
 function lazyWithRetry(
   factory: () => Promise<{ default: React.ComponentType<unknown> }>,
@@ -68,7 +67,7 @@ function AppRoutes() {
           <Route path="/memory/:id" element={<MemoryDetail />} />
           <Route path="/people" element={<People />} />
           <Route path="/map" element={<MapView />} />
-          <Route path="/search" element={<Search />} />
+          <Route path="/search" element={<Navigate to="/timeline" replace />} />
           <Route path="/chat" element={<Chat />} />
           <Route path="/graph" element={<Graph />} />
           <Route path="/heartbeat" element={<Heartbeat />} />

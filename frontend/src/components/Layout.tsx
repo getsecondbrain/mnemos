@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { NavLink, Outlet, useLocation, useOutletContext } from "react-router-dom";
 import Logo from "./Logo";
 import FilterPanel, { useFilterTags, useFilterPersons, useFilterSearchParams } from "./FilterPanel";
 import type { FilterState, TagData, PersonData } from "./FilterPanel";
 import { useEncryption } from "../hooks/useEncryption";
+import SearchOverlay from "./SearchOverlay";
 
 export interface LayoutOutletContext {
   filters: FilterState;
@@ -40,15 +41,6 @@ const navItems: { to: string; label: string; icon: React.ReactNode }[] = [
       <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
         <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
-      </svg>
-    ),
-  },
-  {
-    to: "/search",
-    label: "Search",
-    icon: (
-      <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
       </svg>
     ),
   },
@@ -105,16 +97,31 @@ const navItems: { to: string; label: string; icon: React.ReactNode }[] = [
 
 export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const { filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation } = useFilterSearchParams();
   const tagData = useFilterTags();
   const personData = useFilterPersons();
   const location = useLocation();
   const { isUnlocked } = useEncryption();
 
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+
   // Close mobile menu on route change
   useEffect(() => {
     setMenuOpen(false);
   }, [location.pathname]);
+
+  // Cmd+K / Ctrl+K to open search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
 
   return (
     <div className="flex flex-col md:flex-row h-screen">
@@ -135,6 +142,17 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
             <span>{isUnlocked ? "Unlocked" : "Locked"}</span>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="p-1.5 text-gray-400 hover:text-gray-200 transition-colors rounded-lg hover:bg-gray-800"
+            title="Search (⌘K)"
+            aria-label="Open search"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+          </button>
         <button
           onClick={() => setMenuOpen(!menuOpen)}
           className="text-gray-400 hover:text-gray-200 p-1"
@@ -150,12 +168,25 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
             </svg>
           )}
         </button>
+        </div>
       </div>
 
       {/* Sidebar nav -- hidden on mobile unless menuOpen */}
       <nav className={`${menuOpen ? "flex" : "hidden"} md:flex w-full md:w-56 bg-gray-900 border-b md:border-b-0 md:border-r border-gray-800 flex-col`}>
         <div className="hidden md:block p-4 border-b border-gray-800">
-          <Logo />
+          <div className="flex items-center justify-between">
+            <Logo />
+            <button
+              onClick={() => setSearchOpen(true)}
+              className="p-1.5 text-gray-400 hover:text-gray-200 transition-colors rounded-lg hover:bg-gray-800"
+              title="Search (⌘K)"
+              aria-label="Open search"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+              </svg>
+            </button>
+          </div>
           <div className={`flex items-center gap-1.5 text-xs mt-1.5 ${isUnlocked ? "text-emerald-400" : "text-red-400"}`} role="status" aria-live="polite">
             {isUnlocked ? (
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
@@ -208,6 +239,8 @@ export default function Layout({ onLogout }: { onLogout: () => Promise<void> }) 
       <main className={`flex-1 ${location.pathname === "/graph" ? "relative overflow-hidden" : "overflow-y-auto p-4 md:p-6"}`}>
         <Outlet context={{ filters, setFilters, clearAllFilters, removeContentType, removeDateRange, removeTagId, removePersonId, resetVisibility, removeLocation, tagData, personData } satisfies LayoutOutletContext} />
       </main>
+
+      <SearchOverlay open={searchOpen} onClose={closeSearch} />
     </div>
   );
 }
