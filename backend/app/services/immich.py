@@ -313,6 +313,9 @@ class ImmichService:
     async def get_asset_thumbnail(self, asset_id: str) -> tuple[bytes, str]:
         """Download an asset thumbnail from Immich.
 
+        Tries the /thumbnail endpoint first; if Immich hasn't generated
+        thumbnails yet (returns 404), falls back to the original file.
+
         Returns (image_bytes, content_type).
         Raises on failure.
         """
@@ -322,6 +325,13 @@ class ImmichService:
                 f"{self._base_url}/api/assets/{safe_id}/thumbnail",
                 headers={"x-api-key": self._api_key},
             )
+            if resp.status_code == 404:
+                # Thumbnails not yet generated — fall back to original
+                resp = await client.get(
+                    f"{self._base_url}/api/assets/{safe_id}/original",
+                    headers={"x-api-key": self._api_key},
+                    follow_redirects=True,
+                )
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "image/jpeg")
             return resp.content, content_type
